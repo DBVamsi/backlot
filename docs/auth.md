@@ -64,7 +64,8 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Gmail, Google Drive/Docs/Sheets/Slides, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
 | Linear | A **bare** `Authorization: <token>`, or `Bearer` |
@@ -114,7 +115,10 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
-`me` works as the mailbox id, resolving to whoever the token is.
+Spelt `Bearer` or `OAuth`, in that case, with a space before the token, as the real APIs read it:
+`bearer <token>`, `token <token>` and `Basic …` are no credential at all there and here. `me` works
+as the mailbox id, in any case, resolving to whoever the token is; a user's token reads no other
+mailbox, and the admin token reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 

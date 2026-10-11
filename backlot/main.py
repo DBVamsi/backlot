@@ -426,16 +426,27 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     return await call_next(request)
 
 
-def _some_google_route_matches(scope: Scope) -> bool:
-    """Whether a Google route matches this scope's path, whatever the method. Asked of
-    ``backlot.routers.google.router``, which holds the Google routes and nothing else."""
-    return any(route.matches(scope)[0] is not Match.NONE for route in google.router.routes)
+def _google_route_match(scope: Scope) -> Match:
+    """How the best Google route matches this scope: in full, by its path alone (``PARTIAL``, the
+    router's 405), or not at all. Asked of ``backlot.routers.google.router``, which holds the Google
+    routes and nothing else."""
+    best = Match.NONE
+    for route in google.router.routes:
+        match = route.matches(scope)[0]
+        if match is Match.FULL:
+            return match
+        if match is Match.PARTIAL:
+            best = match
+    return best
 
 
 @app.middleware("http")
-async def serve_a_slashed_google_path_as_the_path_without_it(request: Request, call_next):
+async def route_a_google_path_the_way_google_does(request: Request, call_next):
     """Trailing slashes on a Google family path are not part of the path: real serves what the
-    slash-free spelling serves, however many there are.
+    slash-free spelling serves, however many there are. And an operation Google publishes that no
+    route here serves under the request's method is refused as a served route refuses before it
+    runs, ahead of the router's 404 or 405
+    (``backlot.routers.google.refuse_an_unserved_operation``).
 
     Measured 2026-10-11 against the five hosts: on Drive `files/`, `files//`, `files/{id}/`,
     `files/{id}/export/`, `files/{id}/permissions/`, `about/` and `drives/`; on Gmail `profile/`,
@@ -468,11 +479,15 @@ async def serve_a_slashed_google_path_as_the_path_without_it(request: Request, c
         return await call_next(request)
     raw = request.scope.get("raw_path") or path.encode()
     slashes = len(raw) - len(raw.rstrip(b"/"))
-    routed = path[: len(path) - slashes]
-    scope = {**request.scope, "path": routed}
-    if not _some_google_route_matches(scope):
-        return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-    request.scope["path"] = routed
+    request.scope["path"] = path[: len(path) - slashes]
+    match = _google_route_match(request.scope)
+    if match is not Match.FULL:
+        try:
+            google.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+        if match is Match.NONE:
+            return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
     return await call_next(request)
 
 

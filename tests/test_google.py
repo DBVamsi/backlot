@@ -1062,6 +1062,9 @@ _BATCH_ROWS = [
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%b%4?alt=media", None, None), 302, None, "download/drive/v3/files/a%b%4?alt=media&quotaUser=7"),
     # its place among `$.xgafv`, the credential and `callback`, as `_drive_batch_redirect` records
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _BAD), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "OAuth nope"), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer nope x"), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearernope"), 401, 401, None),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Basic YWJjOmRlZg=="), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "bearer nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
@@ -1241,17 +1244,9 @@ def test_user_cannot_fetch_others_private_gmail(client, tokens_yaml, admin_h, ro
 # --- Google error envelope ------------------------------------------------------------
 #
 # Every case below was MEASURED against the live APIs with real OAuth credentials. The envelope is
-# per-family, not uniform:
-#
-#   family                       errors[]           status               no Authorization header, GET
-#   -----------------------------|------------------|---------------------|-------------------------
-#   Drive v3                     | always           | auth failures only  | 403 PERMISSION_DENIED
-#   Gmail v1                     | unless $.xgafv=2 | always              | 401 UNAUTHENTICATED
-#   Docs v1 / Slides v1          | $.xgafv=1        | always              | 401 UNAUTHENTICATED
-#   Sheets v4                    | $.xgafv=1        | always              | 403 PERMISSION_DENIED
-#
-# The last column is the GET rule; `errors.google.no_credentials` carries the POST one.
-# A bad bearer token is 401 UNAUTHENTICATED in every family.
+# per-family, not uniform: which optional members each family carries is the table in the
+# `backlot.errors.google` docstring. What a request with no credential gets is per operation
+# (`errors.google.no_credentials`), and a bad token is 401 UNAUTHENTICATED in every family.
 
 
 def _gerr(resp):
@@ -2330,8 +2325,8 @@ def _anonymous(client, method, path, params):
 
 def test_the_credential_entries(client):
     """The three credential failures, which differ from each other rather than by family: a bad
-    token, an anonymous Sheets GET, and the missing credential, which is an anonymous GET on an
-    OAuth-only API or an anonymous POST on any family.
+    token, an unregistered caller (here an anonymous Sheets GET), and the missing credential, which
+    is what an anonymous request gets on an operation that takes no API key.
 
     The last of those is asked of Gmail with NO parameter, because Gmail carries the array by
     default, and of Docs, Slides and the Sheets data-filter POST at `$.xgafv=1`, because they do
@@ -2433,33 +2428,243 @@ def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
         assert not [e["path"] for e in acknowledged if "$.xgafv" in e["path"]], source
 
 
-@pytest.mark.parametrize(
-    "method, path, code, status",
-    [
-        ("GET", "/drive/v3/files", 403, "PERMISSION_DENIED"),  # a GET on an API that accepts
-        ("GET", "/sheets/v4/spreadsheets/x", 403, "PERMISSION_DENIED"),  # ...keys is "unregistered"
-        ("GET", "/gmail/v1/users/me/profile", 401, "UNAUTHENTICATED"),  # OAuth-only APIs say the
-        ("GET", "/docs/v1/documents/x", 401, "UNAUTHENTICATED"),  # ...credentials are missing
-        ("GET", "/slides/v1/presentations/x", 401, "UNAUTHENTICATED"),
-        # the two data-filter reads, the only non-GET operations under the five families
-        ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, "UNAUTHENTICATED"),
-        ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, "UNAUTHENTICATED"),
-    ],
-)
-def test_a_missing_header_differs_by_family_and_method(client, method, path, code, status):
-    """The surprise, measured: no `Authorization` header at all is NOT uniformly 401, and the path
-    is half the rule. A GET on Drive or Sheets is 403 PERMISSION_DENIED, a GET on Gmail, Docs or
-    Slides is 401, and a POST is 401 on every family, the two Sheets reads issued over POST
-    included. A bad token is 401 everywhere — so the two cases are genuinely distinct and Backlot
-    conflated them."""
-    r = _anonymous(client, method, path, {})
-    assert r.status_code == code
+# A request with no credential per row: the method, the path, what real answered it with no
+# `Authorization` (403 an unregistered caller, 401 a missing credential, as
+# `errors.google._UNREGISTERED_CALLER_OPERATIONS` records), and what the admin token gets on the
+# same request, which on an operation Backlot does not serve is the 404 or 405 the path gets with
+# no operation to run (`routers.google.refuse_an_unserved_operation`); None where that answer is
+# not this test's. A code of 405 is the router's, whatever the credential.
+# fmt: off
+_NO_CREDENTIAL_ROWS = [
+    ("GET", "/drive/v3/files", 403, 200),
+    ("GET", "/drive/v3/files/{doc}", 403, 200),
+    ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&alt=json", 403, None),
+    ("GET", "/drive/v3/files/{doc}/permissions", 401, 200),
+    ("GET", "/drive/v3/about?fields=user", 401, 200),
+    ("GET", "/drive/v3/drives", 401, 200),
+    ("GET", "/sheets/v4/spreadsheets/x", 403, 404),
+    ("GET", "/sheets/v4/spreadsheets/x/values/A1", 403, 404),
+    ("GET", "/sheets/v4/spreadsheets/x/values:batchGet?ranges=A1", 403, 404),
+    ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, 404),
+    ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, 404),
+    ("GET", "/docs/v1/documents/x", 401, 404),
+    ("GET", "/slides/v1/presentations/x", 401, 404),
+    ("GET", "/gmail/v1/users/me/profile", 401, 200),
+    ("GET", "/gmail/v1/users/me/labels", 401, 200),
+    # the baselines' `missing_operation` rows
+    ("GET", "/drive/v3/changes/startPageToken", 401, 404),
+    ("GET", "/drive/v3/files/generateIds", 401, 404),
+    ("GET", "/drive/v3/files/trash", 403, 404),
+    ("GET", "/drive/v3/files/{doc}/comments", 403, 404),
+    ("POST", "/drive/v3/files/{doc}/comments", 403, 404),
+    ("PATCH", "/drive/v3/files/{doc}/comments/c1", 403, 404),
+    ("DELETE", "/drive/v3/files/{doc}/comments/c1", 403, 404),
+    ("GET", "/drive/v3/files/{doc}/comments/c1/replies", 403, 404),
+    ("GET", "/drive/v3/operations/o1", 403, 404),
+    ("POST", "/drive/v3/files/{doc}/download", 403, 404),
+    ("GET", "/drive/v3/apps", 403, 404),
+    ("GET", "/drive/v3/apps/a1", 401, 404),
+    ("PATCH", "/drive/v3/files/{doc}", 401, 405),
+    ("DELETE", "/drive/v3/files/{doc}", 401, 405),
+    ("POST", "/drive/v3/files/{doc}/copy", 401, 404),
+    ("GET", "/sheets/v4/spreadsheets/x/developerMetadata/1", 401, 404),
+    ("POST", "/sheets/v4/spreadsheets/x:batchUpdate", 401, 405),
+    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 405),
+    ("GET", "/slides/v1/presentations/x/pages/p1", 401, 404),
+    ("POST", "/gmail/v1/users/me/messages/send", 401, 405),
+    ("GET", "/gmail/v1/users/me/drafts", 401, 404),
+    ("DELETE", "/gmail/v1/users/me/messages/abc123", 401, 405),
+    ("POST", "/gmail/v1/users/me/labels", 401, 405),
+    # no operation Google publishes: the router's 405 whatever the credential, where real answered
+    # its front end's HTML 404
+    ("PUT", "/gmail/v1/users/me/profile", 405, 405),
+    ("PUT", "/drive/v3/files/{doc}", 405, 405),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("method, path, code, admin", _NO_CREDENTIAL_ROWS)
+def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, path, code, admin):
+    """The rows `_NO_CREDENTIAL_ROWS` records: no `Authorization` at all is answered per operation
+    rather than per family, a published operation Backlot does not serve included. Every 401 carries
+    real's challenge and no 403 does, `Bearer nope` is the 401 on each published operation, and the
+    admin token is what the request gets once its credential is read."""
+    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    body = _A1_FILTER if method in ("POST", "PATCH") else None
+    r = client.request(method, url, json=body)
+    if code == 405:
+        for headers in (BAD_TOKEN, admin_h):
+            assert client.request(method, url, json=body, headers=headers).status_code == 405
+        assert r.status_code == 405, r.text
+        return
+    assert r.status_code == code, r.text
     e = _gerr(r)
-    assert e["code"] == code and e["status"] == status
     if code == 403:
-        assert "unregistered callers" in e["message"]
+        assert (
+            e["message"] == gerr.UNREGISTERED_CALLER_MESSAGE and e["status"] == "PERMISSION_DENIED"
+        )
+        assert "www-authenticate" not in r.headers
     else:
-        assert "missing required authentication credential" in e["message"]
+        assert e["message"] == gerr.MISSING_CREDENTIALS_MESSAGE and e["status"] == "UNAUTHENTICATED"
+        assert r.headers["www-authenticate"] == 'Bearer realm="https://accounts.google.com/"'
+    bad = client.request(method, url, json=body, headers=BAD_TOKEN)
+    assert bad.status_code == 401, bad.text
+    assert bad.headers["www-authenticate"] == (
+        'Bearer realm="https://accounts.google.com/", error="invalid_token"'
+    )
+    if admin is not None:
+        assert client.request(method, url, json=body, headers=admin_h).status_code == admin
+
+
+_SERVED = "served"  # the read's own 200
+_BAD = "bad"  # bad_token(), its challenge naming `invalid_token`
+_UNNAMED = "unnamed"  # bad_token(named=False), the bare challenge
+_NONE = "none"  # the operation's answer to no credential at all
+
+# An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it on
+# Gmail's `labels.get` and Drive's `files.list`, as ``routers.google._credential`` records.
+# fmt: off
+_CREDENTIAL_ROWS = [
+    ("Bearer {t}", _SERVED), ("OAuth {t}", _SERVED), ("Bearer  {t}", _SERVED),
+    ("Bearer \t{t}", _SERVED), ("Bearer {t} x", _SERVED), ("Bearer {t}\tx", _SERVED),
+    ("Bearer {t},x", _SERVED), ("Bearer ,{t}", _SERVED),
+    ("Bearer nope", _BAD), ("OAuth nope", _BAD), ("Bearer x {t}", _BAD), ("Bearer {t};x", _BAD),
+    ('Bearer {t}"', _BAD), ("Bearer nope x", _BAD),
+    ("Bearer{t}", _UNNAMED), ("Bearer\t{t}", _UNNAMED),
+    ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
+    ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
+    ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("value, answer", _CREDENTIAL_ROWS)
+@pytest.mark.parametrize(
+    "path, anonymous", [("/gmail/v1/users/me/labels/INBOX", 401), ("/drive/v3/files", 403)]
+)
+def test_a_credential_is_read_as_google_reads_it(
+    client, tokens_yaml, value, answer, path, anonymous
+):
+    """The rows `_CREDENTIAL_ROWS` records, on an operation whose caller with no credential is a
+    missing one and on one whose is an unregistered one."""
+    r = client.get(path, headers={"Authorization": value.format(t=tokens_yaml["admin_token"])})
+    if answer == _SERVED:
+        assert r.status_code == 200, r.text
+        return
+    if answer == _NONE:
+        assert r.status_code == anonymous, r.text
+        assert r.json() == client.get(path).json()
+        return
+    assert r.status_code == 401, r.text
+    assert _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE
+    named = ', error="invalid_token"' if answer == _BAD else ""
+    assert r.headers["www-authenticate"] == f'Bearer realm="https://accounts.google.com/"{named}'
+
+
+_DENIED = "Delegation denied for mia@acme.com"
+_NOT_AN_ADDRESS = "Invalid user id specified in request/Delegation denied"
+
+# A Gmail request per row as a user's token sends it, `{u}` the mailbox the path names: the user,
+# the `userId`, the rest of the path and its query, and the status and message real answered, as
+# ``routers.google._mailbox_caller`` records, None where the message is not a refusal's.
+# fmt: off
+_MAILBOX_ROWS = [
+    ("mia", "me", "profile", 200, None),
+    ("mia", "ME", "profile", 200, None),
+    ("mia", "Me", "profile", 200, None),
+    ("mia", "MIA@ACME.COM", "profile", 200, None),
+    ("mia", "mia@acme.com", "messages?maxResults=1", 200, None),
+    ("mia", "ava.chen@acme.com", "profile", 403, _DENIED),
+    ("mia", "someone@example.com", "profile", 403, _DENIED),
+    ("mia", "someone@example.com", "labels", 403, _DENIED),
+    ("mia", "someone@example.com", "labels/INBOX", 403, _DENIED),
+    ("mia", "someone@example.com", "messages", 403, _DENIED),
+    ("mia", "someone@example.com", "messages/{comp}", 403, _DENIED),
+    ("mia", "someone@example.com", "messages/{comp}/attachments/x", 403, _DENIED),
+    ("mia", "someone@example.com", "threads", 403, _DENIED),
+    ("mia", "someone@example.com", "threads/{comp}", 403, _DENIED),
+    ("mia", "bob", "profile", 403, _NOT_AN_ADDRESS),
+    ("mia", "@", "profile", 403, _NOT_AN_ADDRESS),
+    ("mia", "mia@", "profile", 403, _NOT_AN_ADDRESS),
+    ("mia", "@acme.com", "profile", 403, _NOT_AN_ADDRESS),
+    # what comes before it, and what after
+    ("bad", "someone@example.com", "profile", 401, None),
+    ("mia", "someone@example.com", "profile?%24.xgafv=9", 400, None),
+    ("mia", "someone@example.com", "messages/zzz", 403, _DENIED),
+    ("mia", "someone@example.com", "messages?maxResults=0", 403, _DENIED),
+    ("mia", "someone@example.com", "messages?pageToken=zzz", 403, _DENIED),
+    # the admin token, a domain-wide-delegated service account, reads any mailbox
+    ("admin", "someone@example.com", "profile", 200, None),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("caller, user_id, rest, status, message", _MAILBOX_ROWS)
+def test_gmail_a_users_token_reads_its_own_mailbox_only(
+    client, admin_h, tokens, ro_conn, caller, user_id, rest, status, message
+):
+    """The rows `_MAILBOX_ROWS` records. The refusal is real's to the byte, and a user's own mailbox
+    named any way it can be is answered as `me` is, the address it reports included."""
+    comp = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
+    ).fetchone()["id"]
+    headers = {
+        "mia": {"Authorization": f"Bearer {tokens['mia@acme.com']}"},
+        "bad": BAD_TOKEN,
+        "admin": admin_h,
+    }[caller]
+    r = client.get(f"/gmail/v1/users/{user_id}/{rest.format(comp=comp)}", headers=headers)
+    assert r.status_code == status, r.text
+    if message is not None:
+        assert r.json() == {
+            "error": {
+                "code": 403,
+                "message": message,
+                "errors": [{"message": message, "domain": "global", "reason": "forbidden"}],
+                "status": "PERMISSION_DENIED",
+            }
+        }
+    if status == 200 and rest == "profile":
+        me = client.get("/gmail/v1/users/me/profile", headers=headers).json()
+        assert r.json() == me if caller == "mia" else r.json()["emailAddress"] == user_id
+
+
+# An unserved operation per row (`routers.google._PUBLISHED_NOT_SERVED`), beside a system parameter:
+# the method, the path, the query, the credential, and what real answered, as
+# ``refuse_an_unserved_operation`` records — the status and the error code inside it, which a
+# `callback` on a GET wraps at 200. A POST and a PATCH leave `callback` alone, as a served POST
+# does.
+# fmt: off
+_UNSERVED_PARAMETER_ROWS = [
+    ("GET", "/drive/v3/changes/startPageToken", {"$.xgafv": "9"}, None, 400, 400),
+    ("GET", "/drive/v3/changes/startPageToken", {"callback": "cb"}, None, 200, 401),
+    ("GET", "/drive/v3/changes/startPageToken", {"callback": "cb"}, "bad", 200, 401),
+    ("GET", "/drive/v3/changes/startPageToken", {"callback": "a b"}, None, 200, 400),
+    ("GET", "/drive/v3/files/x/comments", {"callback": "cb"}, None, 200, 403),
+    ("GET", "/gmail/v1/users/me/drafts", {"callback": "cb"}, None, 200, 401),
+    ("PATCH", "/drive/v3/files/x", {"$.xgafv": "9"}, "bad", 400, 400),
+    ("PATCH", "/drive/v3/files/x", {"callback": "cb"}, None, 401, 401),
+    ("PATCH", "/drive/v3/files/x", {"callback": "a b"}, None, 401, 401),
+    ("POST", "/gmail/v1/users/me/messages/send", {"callback": "a b"}, "bad", 401, 401),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("method, path, params, caller, status, code", _UNSERVED_PARAMETER_ROWS)
+def test_an_unserved_operation_reads_the_system_parameters_first(
+    client, method, path, params, caller, status, code
+):
+    """The rows `_UNSERVED_PARAMETER_ROWS` records: ahead of the credential, `$.xgafv` refused,
+    and on a GET a `callback` wrapping the refusal or refused itself, as on a served route. The
+    check runs ahead of routing here (``backlot.main.route_a_google_path_the_way_google_does``),
+    where a served route's runs as the router's dependency, so it is pinned on its own."""
+    headers = BAD_TOKEN if caller == "bad" else {}
+    r = client.request(method, path, params=params, headers=headers)
+    assert r.status_code == status, r.text
+    error = _jsonp(r, params["callback"]) if status == 200 else _gerr(r)
+    assert error["error"]["code"] == code if status == 200 else error["code"] == code
+    if code == 401:
+        assert "www-authenticate" in r.headers
 
 
 # --- a `HEAD`, and a trailing slash ------------------------------------------------------------
@@ -2512,6 +2717,7 @@ _HEAD_ROWS = [
     ("/gmail/v1/users/me/messages/zzz", "admin", None, 400, False),
     ("/gmail/v1/users/me/threads", "admin", None, 200, False),
     ("/gmail/v1/users/me/threads/{comp}", "admin", None, 200, False),
+    ("/drive/v3/changes/startPageToken", None, None, 401, False),
     ("/sheets/v4/spreadsheets/{sheet}", "admin", _REFUSED, 400, False),
     ("/sheets/v4/spreadsheets/{sheet}", None, _REFUSED, 400, False),
     ("/sheets/v4/spreadsheets/{sheet}/values/A1", "admin", _REFUSED, 400, False),
@@ -2577,8 +2783,8 @@ def test_google_a_head_is_the_get_without_its_body_or_the_editor_hosts_400(
     assert b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body") == b""
 
 
-# A trailing slash per row, as ``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``
-# records real's answer: the slashed request, the slash-free one it answers as (None where it is the
+# A trailing slash per row, as ``backlot.main.route_a_google_path_the_way_google_does`` records
+# real's answer: the slashed request, the slash-free one it answers as (None where it is the
 # unrouted 404), the credential as in `_HEAD_ROWS`, and the status.
 # fmt: off
 _SLASHED_ROWS = [
@@ -2591,6 +2797,7 @@ _SLASHED_ROWS = [
     ("GET /drive/v3/files/{doc}/export/?mimeType=text/plain", "GET /drive/v3/files/{doc}/export?mimeType=text/plain", "admin", 200),
     ("GET /drive/v3/files/{doc}/permissions/", "GET /drive/v3/files/{doc}/permissions", "admin", 200),
     ("GET /drive/v3/about/?fields=user", "GET /drive/v3/about?fields=user", "admin", 200),
+    ("GET /drive/v3/about/?fields=user", "GET /drive/v3/about?fields=user", None, 401),
     ("GET /drive/v3/drives/", "GET /drive/v3/drives", "admin", 200),
     ("GET /gmail/v1/users/me/profile/", "GET /gmail/v1/users/me/profile", None, 401),
     ("GET /gmail/v1/users/me/profile//", "GET /gmail/v1/users/me/profile", "admin", 200),
@@ -2624,7 +2831,7 @@ def test_google_a_trailing_slash_is_not_part_of_the_path(
 ):
     """The rows `_SLASHED_ROWS` records, each answered byte for byte as its slash-free spelling,
     where the router's own `redirect_slashes` answered a 307 to it
-    (``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``)."""
+    (``backlot.main.route_a_google_path_the_way_google_does``)."""
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],
         "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
@@ -2664,9 +2871,8 @@ def test_google_a_trailing_slash_is_not_part_of_the_path(
 #   indentation   two spaces and a trailing newline on an error, whatever `prettyPrint` says
 #   charset       `application/json; charset=UTF-8` on the plain body
 #
-# The five anonymous errors below are the GET rows of
-# `test_a_missing_header_differs_by_family_and_method`, reused because one request per family is
-# what real was asked.
+# The five anonymous errors below are one GET per family from `_NO_CREDENTIAL_ROWS`, because one
+# request per family is what real was asked.
 
 JSONP_FAMILY_ERRORS = [
     ("/drive/v3/files", 403),
@@ -2753,6 +2959,9 @@ def test_a_callback_answers_an_error_at_200_as_a_script(client, path, code):
     assert r.headers["content-type"] == "text/javascript; charset=UTF-8"
     assert r.text == f"// API callback\ncb({plain.text});"
     assert json.loads(r.text[len("// API callback\ncb(") : -2])["error"]["code"] == code
+    # the 401's challenge rides on the script too (``errors.google._CHALLENGE``)
+    challenge = 'Bearer realm="https://accounts.google.com/"' if code == 401 else None
+    assert r.headers.get("www-authenticate") == challenge
 
 
 def test_a_callback_wraps_a_success_and_an_error_through_the_same_serializer(
@@ -3553,11 +3762,12 @@ def test_a_callback_on_a_download_turns_every_later_error_into_the_same_503(clie
 
 
 def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, admin_h):
-    """On both downloads, `$.xgafv` 400 first, then a `Bearer` token that does not resolve 401, then
-    the callback's 503 -- the order `gerr.missing_api_key` records. Only the header
-    `_sends_a_bearer_token` accepts is a credential at that layer (`_require_download_bearer`):
-    every other value below reaches the callback's 503 beside `callback=a b`, and each of them is
-    a 401 without one."""
+    """On both downloads, `$.xgafv` 400 first, then a credential that does not resolve 401, then
+    the callback's 503 -- the order `gerr.missing_api_key` records. Only a header `_credential`
+    reads as a credential is one at that layer (`_require_download_bearer`): every other value
+    below reaches the callback's 503 beside `callback=a b`. Each of them is a 401 without one, the
+    front end's for a credential and the download server's (`gerr.download_credential_refused`)
+    for the rest."""
     requests = _download_requests(client, admin_h)
     for kind in ("media", "export"):
         url, params = requests[kind]
@@ -3566,6 +3776,10 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
         assert xgafv.status_code == 400 and XGAFV_REFUSAL.format("9") in xgafv.text, kind
         for value, beside_callback in (
             ("Bearer not-a-real-token", 401),
+            ("OAuth not-a-real-token", 401),
+            ("Bearer not-a-real-token x", 401),
+            ("Bearernot-a-real-token", 401),
+            ("Bearer\tnot-a-real-token", 401),
             ("bearer not-a-real-token", 503),
             ("BEARER not-a-real-token", 503),
             ("token not-a-real-token", 503),
@@ -3581,7 +3795,18 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
                 assert answer.text == DOWNLOAD_503_BODY, (kind, value)
             else:
                 assert answer.json()["error"]["status"] == "UNAUTHENTICATED", (kind, value)
-            assert client.get(url, params=params, headers=headers).status_code == 401, (kind, value)
+            alone = client.get(url, params=params, headers=headers)
+            assert alone.status_code == 401, (kind, value)
+            if beside_callback == 503:
+                assert (
+                    _gerr(alone) == gerr.http_body(url, gerr.download_credential_refused())["error"]
+                ), (kind, value)
+                assert (
+                    alone.headers["www-authenticate"]
+                    == 'Bearer realm="https://accounts.google.com"'
+                )
+            else:
+                assert _gerr(alone)["status"] == "UNAUTHENTICATED", (kind, value)
 
 
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
@@ -4110,8 +4335,8 @@ def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
 
 
 def test_drive_about_needs_auth(client):
-    # no header at all on a Drive GET -> 403 (an unregistered caller); a bad token -> 401
-    assert client.get(ABOUT, params={"fields": "user"}).status_code == 403
+    # no header at all -> 401 (`about` takes no API key, `_NO_CREDENTIAL_ROWS`); a bad token -> 401
+    assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
     bad = {"Authorization": "Bearer nope"}
     assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
     # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
