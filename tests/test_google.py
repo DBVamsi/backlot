@@ -2829,8 +2829,7 @@ _SLASHED_ROWS = [
 def test_google_a_trailing_slash_is_not_part_of_the_path(
     client, admin_h, tokens, ro_conn, slashed, slash_free, caller, status
 ):
-    """The rows `_SLASHED_ROWS` records, each answered byte for byte as its slash-free spelling,
-    where the router's own `redirect_slashes` answered a 307 to it
+    """The rows `_SLASHED_ROWS` records, each answered byte for byte as its slash-free spelling
     (``backlot.main.route_a_google_path_the_way_google_does``)."""
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],
