@@ -878,7 +878,7 @@ def _published_operations_not_served() -> tuple[tuple[str, re.Pattern[str]], ...
     than listed here, so an operation Notion adds reaches ``unmatched_path`` once the baseline
     acknowledges it; a route added here wins over ``unmatched_path`` whatever the file says."""
     operations = []
-    for row in json.loads(_BASELINE.read_text())["acknowledged"]:
+    for row in json.loads(_BASELINE.read_text(encoding="utf-8"))["acknowledged"]:
         if row["kind"] == "missing_operation":
             method, path = row["path"].split(" ", 1)
             pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))

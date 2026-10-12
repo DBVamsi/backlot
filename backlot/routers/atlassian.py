@@ -2606,7 +2606,7 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
     so an operation the vendor adds reaches :func:`unmatched_path` once the baseline acknowledges
     it; a route added here wins over :func:`unmatched_path` whatever the file says."""
     baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
-    rows = json.loads(baseline.read_text())["acknowledged"]
+    rows = json.loads(baseline.read_text(encoding="utf-8"))["acknowledged"]
     return _operations(row["path"] for row in rows if row["kind"] == "missing_operation")
 
 
@@ -2614,7 +2614,9 @@ _JIRA_PUBLISHED = _published_not_served("jira")
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: What real answers before each Jira operation of those runs; ``scripts/gen_jira_unserved.py``
 #: writes the file from Jira's documents and says how that was measured.
-_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text())["refused"]
+_JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text(encoding="utf-8"))[
+    "refused"
+]
 #: The Jira operations that will not run for a caller with no credential they resolve.
 _JIRA_REFUSED = _operations(_JIRA_UNSERVED)
 #: Of those, the ones that check the request's media type first, for any caller the gateway lets
@@ -2841,7 +2843,7 @@ def _options_answer(request: Request) -> Response:
 
 
 #: The WADL Jersey writes for `search`, with the site where real's names its own; read once.
-_SEARCH_WADL = (_PACKAGE / "data" / "confluence_search_options.wadl").read_text()
+_SEARCH_WADL = (_PACKAGE / "data" / "confluence_search_options.wadl").read_text(encoding="utf-8")
 
 
 def _search_options(request: Request) -> Response:
