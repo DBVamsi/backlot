@@ -2530,7 +2530,8 @@ _CREDENTIAL_ROWS = [
     ("Bearer {t},x", _SERVED), ("Bearer ,{t}", _SERVED),
     ("Bearer nope", _BAD), ("OAuth nope", _BAD), ("Bearer x {t}", _BAD), ("Bearer {t};x", _BAD),
     ('Bearer {t}"', _BAD), ("Bearer nope x", _BAD),
-    ("Bearer{t}", _UNNAMED), ("Bearer\t{t}", _UNNAMED),
+    ("Bearer{t}", _UNNAMED), ("Bearer\t{t}", _UNNAMED), ("Bearers {t}", _UNNAMED),
+    ("Bearer ,", _UNNAMED), ("OAuth ,", _UNNAMED),
     ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
     ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
     ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
@@ -2566,7 +2567,7 @@ _NOT_AN_ADDRESS = "Invalid user id specified in request/Delegation denied"
 
 # A Gmail request per row as a user's token sends it, `{u}` the mailbox the path names: the user,
 # the `userId`, the rest of the path and its query, and the status and message real answered, as
-# ``routers.google._mailbox_caller`` records, None where the message is not a refusal's.
+# ``routers.google._refuse_another_mailbox`` records, None where the message is not a refusal's.
 # fmt: off
 _MAILBOX_ROWS = [
     ("mia", "me", "profile", 200, None),
@@ -2590,6 +2591,10 @@ _MAILBOX_ROWS = [
     # what comes before it, and what after
     ("bad", "someone@example.com", "profile", 401, None),
     ("mia", "someone@example.com", "profile?%24.xgafv=9", 400, None),
+    ("mia", "someone@example.com", "messages?maxResults=abc", 400, None),
+    ("mia", "someone@example.com", "messages?maxResults=-1", 400, None),
+    ("mia", "someone@example.com", "threads?maxResults=abc", 400, None),
+    ("mia", "bob", "messages?maxResults=abc", 400, None),
     ("mia", "someone@example.com", "messages/zzz", 403, _DENIED),
     ("mia", "someone@example.com", "messages?maxResults=0", 403, _DENIED),
     ("mia", "someone@example.com", "messages?pageToken=zzz", 403, _DENIED),

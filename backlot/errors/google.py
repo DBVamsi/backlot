@@ -562,7 +562,7 @@ def delegation_denied(email: str) -> GoogleError:
     own address. Measured 2026-10-11 with a Workspace member's `gmail.readonly` token, on every
     Gmail route served here, for an address in the member's domain and one outside it. Which
     `userId` is the caller's own, and which refusals come before it, is
-    ``routers.google._mailbox_caller``'s."""
+    ``routers.google._refuse_another_mailbox``'s."""
     return GoogleError(
         403, f"Delegation denied for {email}", reason="forbidden", status="PERMISSION_DENIED"
     )
@@ -571,7 +571,8 @@ def delegation_denied(email: str) -> GoogleError:
 def invalid_user_id() -> GoogleError:
     """:func:`delegation_denied` for a `userId` that is not an address at all: `bob`, `@`, a local
     part with nothing after its `@` and a domain with nothing before it each answered this sentence
-    on 2026-10-11, where `a%40b.com` was an address."""
+    on 2026-10-11, where `a%40b.com` was an address. Which `userId` gets it here is
+    ``routers.google._refuse_another_mailbox``'s."""
     return GoogleError(
         403,
         "Invalid user id specified in request/Delegation denied",

@@ -193,10 +193,12 @@ real API does — and map back to the corpus document; an id the real API could 
 the same way. On both listings a `pageToken` that does not parse is real's 400 `Invalid pageToken`
 and an empty one is the first page, refused where each listing refuses it beside `maxResults`
 (`backlot.routers.google._gmail_page`). A credential, a `HEAD` and a trailing slash are answered as
-on Drive, in the section below. To a user's token, any `userId` but `me`, in any case, and its own
-address is real's 403 `Delegation denied for <the caller's own address>`, ahead of the message id,
-`maxResults` and `pageToken` checks; the admin token reads any mailbox. Measured against the live
-Gmail API on 2026-10-11.
+on Drive, in the section below. A user's token is held to its own mailbox, `me` in any case or its
+own address: another address is real's 403 `Delegation denied for <the caller's own address>`, and a
+`userId` without text on both sides of an `@`, the 403
+`Invalid user id specified in request/Delegation denied`. Both come after a `maxResults` that is not
+a uint32 and ahead of the message id, a `maxResults` of 0 and the `pageToken`; the admin token reads
+any mailbox. Measured against the live Gmail API on 2026-10-11 and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 

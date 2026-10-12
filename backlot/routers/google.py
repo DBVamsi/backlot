@@ -273,10 +273,12 @@ def _credential(request: Request) -> tuple[bool, str | None]:
 
     The scheme is `Bearer` or `OAuth` in that case, and one space after it starts the token, which
     runs to the next space, tab or comma once any of those in front of it are passed. A scheme with
-    something other than a space after it is a credential that names no token; a scheme with
-    nothing after it, a scheme in another case and anything else are no credential at all. Measured
-    on 2026-10-11 against Drive (`files.list` and `about`), Sheets, Docs, Slides and Gmail, with a
-    token that resolves (`<t>`) and with `nope`::
+    something other than a space after it, and one whose space leads to nothing but those three,
+    is a credential that names no token; a scheme with nothing but spaces and tabs after it, a
+    scheme in another case and anything else are no credential at all. Measured on 2026-10-11
+    against Drive (`files.list` and `about`), Sheets, Docs, Slides and Gmail, with a token that
+    resolves (`<t>`) and with `nope`, and the last two rows of the middle column on Gmail and on
+    Drive's `files.list` on 2026-10-12::
 
         served                    a credential that fails      no credential
         ------------------------|----------------------------|------------------------------
@@ -285,7 +287,8 @@ def _credential(request: Request) -> tuple[bool, str | None]:
         Bearer  <t>             | Bearer <t>"                | token <t>, Token <t>, MAC <t>
         Bearer <TAB><t>         | Bearer<t>                  | Basic Zm9vOmJhcg==, <t>
         Bearer <t> x            | Bearer<TAB><t>             | Bearer, OAuth
-        Bearer <t>,x, Bearer ,<t>
+        Bearer <t>,x            | Bearers <t>, OAuth2 <t>    |
+        Bearer ,<t>             | Bearer ,  (and OAuth ,)    |
 
     A Drive download and a batch part read the header this way too, ahead of their own refusals;
     which spellings were sent there is `_require_download_bearer`'s and `_drive_batch_redirect`'s
@@ -372,8 +375,8 @@ def refuse_an_unserved_operation(request: Request) -> None:
     """Raise what real answers ahead of an operation in `_PUBLISHED_NOT_SERVED`, which is what a
     served route answers ahead of its own work: `$.xgafv`, then a `callback` on a GET, then the
     credential, by `_require`'s rule and the operation's own anonymous answer
-    (:func:`gerr.no_credentials`). A caller that passes all three gets what the path got before,
-    the 404 or the 405, as Backlot has no operation to run.
+    (:func:`gerr.no_credentials`). A caller that passes all three gets the router's 404 or 405, as
+    Backlot has no operation to run.
 
     Measured 2026-10-11 on each of the 147 operations, with no `Authorization` and with
     `Bearer nope`, and on eight of them beside an unknown `$.xgafv`, `$.xgafv=1`, a callable
@@ -401,18 +404,31 @@ def _is_me(user_id: str) -> bool:
 
 
 def _mailbox_caller(request: Request, user_id: str) -> Caller:
-    """The caller, as `_require` gives it, refused where `userId` names a mailbox not its own.
+    """The caller, as `_require` gives it, refused by :func:`_refuse_another_mailbox`."""
+    caller = _require(request)
+    _refuse_another_mailbox(caller, user_id)
+    return caller
+
+
+def _refuse_another_mailbox(caller: Caller, user_id: str) -> None:
+    """Refuse a user's token a `userId` that names a mailbox not its own.
 
     A user's token reads its own mailbox only, named `me` (:func:`_is_me`) or by its own address in
-    any case. Another address is :func:`gerr.delegation_denied` and a `userId` that is no address
-    :func:`gerr.invalid_user_id`, measured 2026-10-11 on every Gmail route served here after
-    `$.xgafv` and the credential and ahead of an unparseable message id, a `maxResults` of 0 and a
-    page token that does not parse. The admin token stands for a domain-wide-delegated service
-    account and reads any mailbox; real's answer to one was not measured, since only a domain's
-    administrator can grant the delegation."""
-    caller = _require(request)
+    any case. A `userId` with no `@`, or nothing on one side of it, is :func:`gerr.invalid_user_id`
+    and any other is :func:`gerr.delegation_denied`. Real draws that line more narrowly: on
+    2026-10-12 `a@b`, `a@b.c`, `a@b@c`, `a@x.com.`, `a@b_c.com`, a local part holding a space, a
+    tab, `"`, `,` or `;`, and a literal `+`, which real reads as a space, were each the invalid id,
+    where `a%2Bb@x.com`, `a@1.2` and `.a@x.com` were addresses; here those are the delegation
+    refusal.
+
+    Measured 2026-10-11 and 2026-10-12 on every Gmail route served here: the refusal comes after
+    `$.xgafv`, the credential and a `maxResults` the proto layer cannot read as a uint32
+    (:func:`_gmail_max_results`), and ahead of an unparseable message id or attachment token, a
+    missing message or label, a `maxResults` of 0 and a page token that does not parse. The admin
+    token stands for a domain-wide-delegated service account and reads any mailbox; real's answer
+    to one was not measured, since only a domain's administrator can grant the delegation."""
     if caller.email is None or _is_me(user_id) or user_id.lower() == caller.email.lower():
-        return caller
+        return
     local, at, domain = user_id.partition("@")
     if not (local and at and domain):
         raise gerr.invalid_user_id()
@@ -752,9 +768,16 @@ def _by_thread(rows) -> list:
     return out
 
 
-def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
-    """The page size and offset `messages.list` and `threads.list` serve, refused in the order real
-    refuses them on each.
+def _gmail_max_results(request: Request) -> list[int]:
+    """Every `maxResults` the request sends, each read as Gmail's proto layer reads it, a uint32
+    (:func:`_gmail_uint32`). A listing reads them ahead of :func:`_refuse_another_mailbox`, where
+    real refuses one it cannot read; what the method makes of them is :func:`_gmail_page`'s."""
+    return _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
+
+
+def _gmail_page(request: Request, listing: str, sizes: list[int]) -> tuple[int, int]:
+    """The page size and offset `messages.list` and `threads.list` serve from the `maxResults`
+    values :func:`_gmail_max_results` read, refused in the order real refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -770,13 +793,12 @@ def _gmail_page(request: Request, listing: str) -> tuple[int, int]:
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
 
-    The uint32 refusal comes first on both listings. After it `messages.list` refuses a `pageToken`
-    that does not parse (:func:`_gmail_page_token`) before a `maxResults` out of range, and
-    `threads.list` the range before the token: measured on 2026-10-09 with `maxResults` of `0` and
-    `2147483648` beside a token that does not parse, each request sent four times with the same
-    answer.
+    The uint32 refusal comes first on both listings, ahead of the mailbox check too. After it
+    `messages.list` refuses a `pageToken` that does not parse (:func:`_gmail_page_token`) before a
+    `maxResults` out of range, and `threads.list` the range before the token: measured on 2026-10-09
+    with `maxResults` of `0` and `2147483648` beside a token that does not parse, each request sent
+    four times with the same answer.
     """
-    sizes = _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
     offset = _gmail_page_token(request) if listing == "messages" else None
     if not sizes:
         limit = min(get_settings().default_page_size, 500)
@@ -829,10 +851,12 @@ def _gmail_ids(row) -> tuple[str, str]:
 )
 async def gmail_messages_list(user_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _mailbox_caller(request, user_id)
+    caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     mailbox = _mailbox_container(conn, caller, user_id)  # None = all mailboxes
-    limit, offset = _gmail_page(request, "messages")
+    limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
         matched = _gmail_query(conn, mailbox, ids, q)
@@ -931,14 +955,16 @@ def _attachment(rows, att_id: str) -> tuple[str, int, dict] | None:
 )
 async def gmail_threads_list(user_id: str, request: Request):
     conn = auth.conn(request)
-    caller = _mailbox_caller(request, user_id)
+    caller = _require(request)
+    sizes = _gmail_max_results(request)
+    _refuse_another_mailbox(caller, user_id)
     ids = auth.visible_ids(request, caller)
     # The MAILBOX's threads, like messages.list and like real Gmail — not the threads the caller
     # happens to have written in. Scoping by author served a mailbox owner none of the mail they
     # received, and `q` was already scoping by container, so the two halves of this one listing
     # disagreed about what a thread list is.
     mailbox = _mailbox_container(conn, caller, user_id)
-    limit, offset = _gmail_page(request, "threads")
+    limit, offset = _gmail_page(request, "threads", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
