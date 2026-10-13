@@ -57,9 +57,9 @@ CONFLUENCE_FORBIDDEN_BODY = json.dumps(
 
 # What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
 # JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
-# `error` key and nothing else: not this module's envelope, and not Confluence's either, so it is
-# returned as its own body rather than shaped. Measured 2026-09-04, on two sites; the XML it
-# answers instead is :func:`connect_token_answer`.
+# `error` key and nothing else: neither Jira's envelope (:func:`_jira_envelope`) nor Confluence's,
+# so it is returned as its own body rather than shaped. Measured on two Jira Cloud sites,
+# 2026-09-04; the XML it answers instead is :func:`connect_token_answer`.
 CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
 
 
@@ -84,9 +84,9 @@ JIRA_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 # Connect module path, `cache-control: no-cache, no-store, must-revalidate` and a 1970 `expires`
 # beside it. Measured 2026-09-30; the paths are ``backlot.routers.atlassian``'s.
 CONFLUENCE_NOT_PERMITTED = "Current user not permitted to use Confluence"
-CONFLUENCE_NOT_PERMITTED_BODY = (
-    b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
-)
+CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
+    {"message": CONFLUENCE_NOT_PERMITTED, "statusCode": 403}, separators=(",", ":")
+).encode()
 
 
 def owns(path: str) -> bool:
@@ -562,7 +562,7 @@ def refuse_a_media_type(
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it, though an unreadable one leaves the body out (:func:`rendered`)
     - where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type
-      read without one (``scripts/gen_jira_unserved.py`` names the operations, measured 2026-10-12)
+      read without one (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
 
     A charset is looked up in Python's codec registry rather than Java's, which agree on the ones
     above.
@@ -609,8 +609,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     `POST space/{key}/permission`: an absent or empty `Content-Type` is named `''`, a type is named
     as :func:`_parse_media_type` reads it (`APPLICATION/JSON` as `application/json`,
     `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters kept), and a value with no `/` (`foo`) is
-    refused as no type at all. A value Spring cannot read for another reason is named as sent, the
-    one case the sweep did not cover.
+    refused as no type at all. A value Spring cannot read for another reason is named as sent
+    here, where real says why it could not read it
+    (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
+    `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and
+    the code are the same.
     """
     value = headers.get("content-type") or ""
     media_type = _parse_media_type(value) if value else None
@@ -907,6 +910,21 @@ def connect_token_answer(accept: str | None) -> tuple[str, bytes]:
         if named == "application/json":
             break
     return "application/json", json.dumps(connect_token_body()).encode()
+
+
+def jaxrs_media_type_refusal(value: str | None, *, checks_type: bool) -> int | None:
+    """The status a Confluence JAX-RS write refuses a `Content-Type` of ``value`` with, or None:
+    400 (Tomcat's page, :func:`tomcat_page`) for one it cannot read as a type, measured with
+    `foo`, and where it ``checks_type``, 415 with no body for a type other than JSON (`text/plain`
+    and `application/xml`), measured 2026-10-13. No `Content-Type` is no refusal."""
+    if not value:
+        return None
+    media_type = _parse_media_type(value)
+    if media_type is None:
+        return 400
+    if checks_type and not _takes(("application/json",), media_type):
+        return 415
+    return None
 
 
 # The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
@@ -1284,7 +1302,8 @@ _GATEWAY_PATCH_PAGE = (
 )
 
 #: The page Confluence's Tomcat answers a refusal with where nothing in `Accept` takes JSON, and
-#: the encoded slash's 400 whatever it takes (:func:`front_door`): the status and its reason in the
+#: an encoded slash's or backslash's 400 whatever it takes (:func:`front_door`): the status and its
+#: reason in the
 #: title and in `<h1>` and nothing else, on `text/html;charset=utf-8` with `Content-Language: en`.
 #: Measured 2026-10-12 for the 400 and 2026-10-13 for the 403, 405, 406 and 415
 #: (:func:`confluence_refusal`), 431 to 457 bytes.
@@ -1313,19 +1332,24 @@ def tomcat_page(status: int) -> str:
 TOMCAT_MEDIA_TYPE = "text/html;charset=utf-8"
 
 
-#: The tag names the CDN's firewall refuses a path for, whatever their case, and the two prefixes
-#: it refuses every name beginning with (:func:`waf_blocks` carries the measurement). A name runs to
-#: whitespace, `/`, `>` or the end of the path; a closing tag is refused for `script` alone, and a
-#: `<!doctype` is refused too.
+#: The tag names the CDN's firewall refuses a path for, whatever their case, and the prefixes it
+#: refuses every name beginning with (:func:`waf_blocks` carries the measurement). A name runs to
+#: whitespace, `/`, `<`, `>` or the end of the path, and a closing tag is refused for `script`
+#: alone. `<!doctype` and `<!entity` are prefixes too (`<!DOCTYPEhtml>` and `<!entityx>` refused,
+#: `<!doctyp>` and `<!ELEMENT>` served, 2026-10-13).
 _WAF_TAGS = frozenset(
     "applet base comment embed frame frameset handler iframe import isindex link listener meta "
     "noscript object script style vmlframe xml xss".split()
 )
-_WAF_TAG_PREFIXES = ("svg", "xsl")
+_WAF_TAG_PREFIXES = ("svg", "xsl", "!doctype", "!entity")
 _TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
-#: A step up a directory, `..` followed by `/` or `\`, which the firewall refuses in the path and in
-#: a query parameter's value, measured 2026-10-12.
-_TRAVERSAL = re.compile(r"\.\.[/\\]")
+#: A step up a directory as the firewall reads one in the path: `..` followed by `/`, `\` or `;/`,
+#: measured 2026-10-12 and (`..;/`) 2026-10-13. A `..;` with no `/` after it is not refused here;
+#: real answers it further in, with a 400 page that is not copied.
+_PATH_STEP = re.compile(r"\.\.(?:;?/|\\)")
+#: The same in a query parameter's value, where the firewall reads less: `../` anywhere and `..\`
+#: only at the end of the value (`?x=..%5C` refused, `?x=..%5Cy` served), measured 2026-10-13.
+_QUERY_STEP = re.compile(r"\.\./|\.\.\\\Z")
 
 
 def _decoded_twice(text: str) -> str:
@@ -1351,9 +1375,9 @@ def waf_blocks(raw_path: str, raw_query: str) -> bool:
 
     What is copied is the part of it a table can hold, measured 2026-10-12 on both products: a tag
     :data:`_WAF_TAGS` names in the path, read after two percent-decodings and with HTML entities
-    resolved, and a step up a directory (:data:`_TRAVERSAL`) in the path or in a query parameter's
-    value, read after the two percent-decodings alone. The firewall refuses more than this table
-    holds; a request it would refuse on other grounds reaches the routes here.
+    resolved, and a step up a directory in the path (:data:`_PATH_STEP`) or in a query parameter's
+    value (:data:`_QUERY_STEP`), read after the two percent-decodings alone. The firewall refuses
+    more than this table holds; a request it would refuse on other grounds reaches the routes here.
     """
     path = _resolve_entities(_decoded_twice(raw_path))
     for match in _TAG.finditer(path):
@@ -1361,13 +1385,13 @@ def waf_blocks(raw_path: str, raw_query: str) -> bool:
         if closing:
             if name == "script":
                 return True
-        elif name in _WAF_TAGS or name.startswith(_WAF_TAG_PREFIXES) or name == "!doctype":
+        elif name in _WAF_TAGS or name.startswith(_WAF_TAG_PREFIXES):
             return True
-    if _TRAVERSAL.search(_decoded_twice(raw_path)):
+    if _PATH_STEP.search(_decoded_twice(raw_path)):
         return True
     for parameter in raw_query.split("&"):
         name, eq, value = parameter.partition("=")
-        if eq and _TRAVERSAL.search(_decoded_twice(value)):
+        if eq and _QUERY_STEP.search(_decoded_twice(value)):
             return True
     return False
 
@@ -1401,8 +1425,11 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     `PATCH` (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash
     anywhere under `/wiki/` with 400, for every method, every credential and the `Accept` values
     `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes the
-    decoded path. Each layer's answer is the same whatever the credential, and the gateway's
-    Connect-token 403 comes after all of them.
+    decoded path; an encoded backslash is the same 400 (2026-10-13). `/wiki/spaces/` is the
+    exception, the web app's own pages, which answered both with 200 (2026-10-13). Each layer's
+    answer is the same whatever the credential, and the gateway's Connect-token 403 comes after all
+    of them. Which product a path is the gateway's to decide, and it reads the path with each run of
+    slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -1424,14 +1451,20 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     if waf_blocks(raw_path, raw_query):
         page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
         return FrontDoor(403, "cdn edge", "text/html", page, {})
-    confluence = raw_path == WIKI or raw_path.startswith(f"{WIKI}/")
+    collapsed = re.sub(r"/{2,}", "/", raw_path)
+    confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
     if method in GATEWAY_REFUSED:
         status, phrase, server = (
             (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
-    if raw_path.startswith(f"{WIKI}/") and "%2f" in raw_path.lower():
+    encoded = collapsed.lower()
+    if (
+        collapsed.startswith(f"{WIKI}/")
+        and not collapsed.startswith(f"{WIKI}/spaces/")
+        and ("%2f" in encoded or "%5c" in encoded)
+    ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )
@@ -1576,13 +1609,13 @@ def head_content_length(path: str, status_code: int) -> bool:
 def _jira_envelope(message: str) -> dict:
     """Jira's refusal body: the message in an ``errorMessages`` list beside an empty ``errors``, and
     nothing else. Real's `issue/{key}` 404, its project 404 and its `orderBy` 400 each carry these
-    two members alone, measured 2026-09-30 and 2026-10-12."""
+    two members alone, measured 2026-09-30 and 2026-10-13."""
     return {"errorMessages": [message], "errors": {}}
 
 
 def _confluence_envelope(status_code: int, message: str) -> dict:
     """Confluence's refusal body: ``statusCode`` and the scalar ``message`` its Stackless 403
-    carries, and nothing else, measured the same days."""
+    carries, and nothing else, measured 2026-09-30 and 2026-10-13."""
     return {"statusCode": status_code, "message": message}
 
 
@@ -1607,10 +1640,10 @@ def http_body(path: str, exc, query=None) -> dict:
 
 def validation_body(path: str, errors) -> tuple[int, dict]:
     """A 422 from FastAPI's own request validation, in the product's refusal envelope. The per-field
-    detail collapses to one sentence because that is the only part a client reads. Real answers an
-    unconvertible path parameter with a 400 of its own rather than a 422 — Jira's problem+json, a
-    Spring `MethodArgumentTypeMismatchException` on Confluence — which this does not reproduce; only
-    the member shape is matched here."""
+    detail collapses to one sentence because that is the only part a client reads. Jira's routes
+    read their own parameters, so what reaches this is a Confluence integer path parameter, for
+    which real answers a 400 in the same two members, a Spring
+    `MethodArgumentTypeMismatchException`, where this answers the 422."""
     message = "; ".join(e.get("msg", "invalid request") for e in errors) or "Invalid request"
     if is_confluence(path):
         return 422, _confluence_envelope(422, message)
