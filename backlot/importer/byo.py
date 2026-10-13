@@ -3429,9 +3429,9 @@ def _load_records(
 
     Closed on a raise as well, before `load_records` unlinks the half-built DB to put the previous
     one back: Windows refuses to unlink a file an open handle holds, and an unclosed connection
-    lives as long as the traceback of the exception that left it. On 2026-10-13 a refused import
-    over an existing corpus, on Windows 11 and Python 3.14.0, ended in PermissionError [WinError 32]
-    instead of its refusal, and left the previous corpus at ``db.sqlite.replaced``."""
+    lives as long as the traceback of the exception that left it. Unlinking ``db.sqlite`` with a
+    connection to it still open raised PermissionError [WinError 32] on Windows 11 (2026-10-13,
+    Python 3.14.0)."""
     conn = store.connect_rw(settings.db_path)
     try:
         return _load_records_into(conn, records_factory, settings, reset, roster, want_id_map)
