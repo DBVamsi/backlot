@@ -4481,9 +4481,8 @@ def _presign(
 ) -> str:
     """A presign's query with every parameter present: ``credential`` unless given, which is
     ``akid`` over a scope dated `date`'s day or ``scope_date``, with no region when the
-    ``algorithm`` is SigV4a's. The rows below are built when the module is imported, so the
-    default lifetime is an hour, long enough for a serial run to reach them unexpired; a row that
-    is to expire says so."""
+    ``algorithm`` is SigV4a's. The rows below are built when the module is imported, and answered
+    on the clock of that moment (`_REFUSAL_ROWS_SIGNED_AT`); a row that is to expire says so."""
     stamp = date[:8] if scope_date is None else scope_date
     if credential is None:
         regions = "" if algorithm == V4A else f"{region}/"
@@ -4845,12 +4844,9 @@ _REFUSAL_ROWS_UNIT = [
      *_NEGATIVE_EXPIRES),
     ("query X-Amz-Expires the greatest long", {}, _presign(_now(), expires="9223372036854775807"),
      *_OVER_A_WEEK),
-    # Signed when the row runs rather than when the module is imported: they stand for 300
-    # seconds, and a run that took longer than that to reach them found them expired (a whole-suite
-    # run with every extra installed, on Windows on 2026-10-13, answered AccessDenied for all five).
     *[
         (f"query X-Amz-Expires {value!r} is 300", {},
-         lambda value=value: _presign(_now(), expires=value, akid=_UNKNOWN), *_UNKNOWN_KEY)
+         _presign(_now(), expires=value, akid=_UNKNOWN), *_UNKNOWN_KEY)
         for value in ("+300", "0300", "٣٠٠", "３００", "0" * 40 + "300")
     ],
     # A V2 query's `Expires`: every negative long is a date, a positive one to an int32's largest,
@@ -4929,6 +4925,20 @@ _REFUSAL_ROWS_UNIT = [
 ]
 # fmt: on
 
+# When the table above was signed. A row stops being the request it stands for once a run has
+# taken long enough to reach it: a query's `X-Amz-Expires` of 300 seconds runs out, and a header's
+# date drifts further from the server's clock than `backlot.sigv4.is_skewed` allows. So each row is
+# answered on the server's clock as it read at this moment.
+_REFUSAL_ROWS_SIGNED_AT = datetime.now(timezone.utc)
+
+
+class _ClockAtSigning(datetime):
+    """`datetime` whose `now` is `_REFUSAL_ROWS_SIGNED_AT`."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _REFUSAL_ROWS_SIGNED_AT
+
 
 @pytest.mark.parametrize(
     "headers, query, code, message, members",
@@ -4936,15 +4946,15 @@ _REFUSAL_ROWS_UNIT = [
     ids=[r[0] for r in _REFUSAL_ROWS_UNIT],
 )
 def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
-    headers, query, code, message, members
+    headers, query, code, message, members, monkeypatch
 ):
     """Each row is real's answer to that request, measured 2026-09-29 against us-east-1
     (``backlot.auth.resolve_sigv4`` has the order), and the members real named where the row names
     them. Each carries the payload hash boto3 sends, and a row that sends none names it as
-    ``None``."""
+    ``None``. The server reads its clock as it read when the rows were signed
+    (`_REFUSAL_ROWS_SIGNED_AT`)."""
+    monkeypatch.setattr(auth, "datetime", _ClockAtSigning)
     sent = {"host": "backlot", "x-amz-content-sha256": "UNSIGNED-PAYLOAD", **headers}
-    if callable(query):
-        query = query()
     caller, err = auth.resolve_sigv4(
         _request(
             "GET", "/s3/eng-artifacts", query, {k: v for k, v in sent.items() if v is not None}
