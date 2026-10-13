@@ -2,31 +2,41 @@
 #
 # windows-latest is the one runner whose locale encoding is cp1252: a file opened without
 # encoding="utf-8" decodes with it, and the bundled schemas then fail to load before any command
-# runs. The Linux suite under PYTHONWARNDEFAULTENCODING=1 (ci.yml) refuses such an open wherever a
-# test reaches it; this job is the proof on the platform itself, with PYTHONUTF8 unset. A pull
-# request runs the README's first command, the test files that read and write Backlot's own files,
-# and the tests marked xfail, so a pull request that makes a strict one pass fails until it removes
-# the mark. The whole suite runs weekly rather than per pull request: on windows-latest on
-# 2026-10-13 the per-pull-request files took 5.5 minutes, and 15.5 with tests/test_importer_byo.py
-# among them. Pinned below Python 3.15, where UTF-8 mode becomes the default (PEP 686) and the job
-# would prove nothing.
+# runs. The Linux suite under PYTHONWARNDEFAULTENCODING=1 (ci.yml) refuses such an open on every
+# pull request wherever a test reaches it; this job is the proof on the platform itself, with
+# PYTHONUTF8 unset, and it is too slow to run on every commit (on 2026-10-13 its pull-request run
+# took 5 minutes 15 seconds on windows-latest, where the Linux test jobs took 3 to 4). So it runs
+# on a pull request only once a maintainer adds the `windows` label, for a change to how Backlot
+# opens files, spawns processes or reads paths, and then on each push to it; and on `main` once a
+# day, as the whole suite, rather than after every merge. A pull request runs the README's first
+# command, the test files that read and write Backlot's own files, and the tests marked xfail, so
+# a pull request that makes a strict one pass fails until it removes the mark. Pinned below Python
+# 3.15, where UTF-8 mode becomes the default (PEP 686) and the job would prove nothing.
 name: Windows
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   schedule:
-    # Mondays 02:00 UTC, 11:00 in Seoul.
-    - cron: "0 2 * * 1"
+    # Daily at 02:00 UTC, 11:00 in Seoul, an hour after the fidelity run.
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  # A newer push to the same pull request, or a label added to it, replaces a run still going.
+  group: windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'windows')
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -37,18 +47,19 @@ jobs:
       - name: The README's first command
         run: uv run --no-sync python -m backlot import backlot/data/hello.jsonl
       - name: The test files that read and write Backlot's own files
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         run: >
           uv run --no-sync pytest -rs
           tests/test_cli.py tests/test_server.py tests/test_schema.py tests/test_docs.py
-          tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py tests/test_packaging.py
+          tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py
+          tests/test_packaging.py
       - name: The tests marked xfail, which still fail here
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         # pytest exits 5 when the selection is empty, which is where this ends once the last mark
         # is removed; that is not a failure.
         run: |
           uv run --no-sync pytest -rxs -o addopts= -m xfail tests
           if ($LASTEXITCODE -eq 5) { exit 0 }
       - name: The whole suite
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         run: uv run --no-sync pytest -rs
