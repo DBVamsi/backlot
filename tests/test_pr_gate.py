@@ -15,7 +15,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 def _gate():
     """The script as a module, loaded the way `_gen_docs` in `tests/test_skills.py` is."""
-    spec = importlib.util.spec_from_file_location("pr_gate", REPO / "scripts" / "pr_gate.py")
+    spec = importlib.util.spec_from_file_location(
+        "scripts.pr_gate", REPO / "scripts" / "pr_gate.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
