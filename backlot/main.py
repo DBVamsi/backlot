@@ -443,36 +443,24 @@ def _google_route_match(scope: Scope) -> Match:
 @app.middleware("http")
 async def route_a_google_path_the_way_google_does(request: Request, call_next):
     """Trailing slashes on a Google family path are not part of the path: real serves what the
-    slash-free spelling serves, however many there are. And an operation Google publishes that no
-    route here serves under the request's method is refused as a served route refuses before it
-    runs, ahead of the router's 404 or 405
+    slash-free spelling serves, however many there are, refusals included. Measured 2026-10-11
+    against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
+    operation Google publishes that no route here serves under the request's method is refused as a
+    served route refuses before it runs, ahead of the router's 404 or 405
     (``backlot.routers.google.refuse_an_unserved_operation``).
 
-    Measured 2026-10-11 against the five hosts: on Drive `files/`, `files//`, `files/{id}/`,
-    `files/{id}/export/`, `files/{id}/permissions/`, `about/` and `drives/`; on Gmail `profile/`,
-    `profile//`, `labels/`, `labels//`, `labels///`, `labels/INBOX/`, `messages/`, `messages/{id}/`,
-    `messages/{id}/attachments/{id}/`, `threads/` and `threads/{id}/`; on Sheets
-    `spreadsheets/{id}/`, `spreadsheets/{id}//`, `values/A1/`, `values/A1//`, `values:batchGet/` and
-    a `POST` to `:getByDataFilter/`; and `documents/{id}/` and `presentations/{id}/` each answered
-    what the path without its slashes answers, refusals included, and a `HEAD` on `files/` and
-    `labels/` did too. An escaped slash is not one of them — `values/A1%2F` is real's 400
-    `Unable to parse range: A1/` — so the slashes counted are the raw path's. A run of slashes
-    inside a path is not dropped either: `/drive/v3//files` and `users/me//labels` are the 404 an
-    unrouted path gets.
+    An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
+    — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
+    `/drive/v3//files` and `users/me//labels` are real's unrouted 404, and so are `values` and
+    `values/`, whose range would be empty. With the slash gone no route here matches `values`, and
+    the router's `redirect_slashes` would answer it with a 307 to `values/`, which the route reading
+    `values/{a1_range:path}` takes; so a path that matches no route once its slashes are gone is the
+    unrouted 404 here.
 
-    The router's `redirect_slashes` is what this stands in front of. It would answer each slashed
-    spelling with a 307 to the slash-free one, and a path no route matches with a 307 to the
-    slashed one where a route matches that: `values` and `values/`, whose range would be empty,
-    are both the unrouted 404 on real, measured the same day, where the route reading
-    `values/{a1_range:path}` takes `values/`. So a path that matches no route once its slashes are
-    gone is that 404 here.
-
-    The raw path keeps the slashes, because what a Drive download sent as a batch part is redirected
-    to is its path as sent, slashes and all: measured the same day, `files/{id}/?alt=media`,
-    `files/{id}//?alt=media` and `files/{id}/export/` each came back under `/download` with their
-    slashes, and ``backlot.routers.google._drive_batch_redirect`` builds that from the raw bytes.
-    The path is the scope's rather than ``request.url``'s, in which a decoded `%23` would start a
-    fragment and cut the path short.
+    The raw path keeps the slashes, because a Drive download sent as a batch part is redirected to
+    its path as sent, slashes and all, which ``backlot.routers.google._drive_batch_redirect`` builds
+    from the raw bytes. The path is the scope's rather than ``request.url``'s, in which a decoded
+    `%23` would start a fragment and cut the path short.
     """
     path = request.scope["path"]
     if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):

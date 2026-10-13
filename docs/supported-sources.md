@@ -379,10 +379,11 @@ a `content-length` only on a download's 200, where it is the length of the bytes
 every other answer declares none, as real's chunked answers do. `callback` does not reach a `HEAD`
 but as the 503 a download answers beside an uncallable name. A `HEAD` on Docs, Sheets or Slides is
 the host's 400 with an empty `text/html; charset=utf-8` body, ahead of the credential and of
-`$.xgafv`. Trailing slashes are not part of a path on any of the five families — `files/`,
-`labels///` and `spreadsheets/{id}/` each answer what the path without them answers — while a
-doubled slash mid-path is kept, as a segment no route matches. Measured against the live Drive,
-Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
+`$.xgafv`; real Sheets answers some `HEAD`s with its HTML 404 page instead, which is not modelled
+(`backlot.errors.google.head_refusal`). Trailing slashes are not part of a path on any of the five
+families — `files/`, `labels///` and `spreadsheets/{id}/` each answer what the path without them
+answers — while a doubled slash mid-path is kept, as a segment no route matches. Measured against
+the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
