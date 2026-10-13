@@ -322,11 +322,12 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     a token name the query repeats, names no token. A part of a batch whose own query carries none
     of the three names reads the batch's.
 
-    Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone and each pair
-    in both orders beside each kind of header, with the rows ``tests/test_google.py`` keeps in
-    `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a byte
-    sweep over the printable ASCII found, 282 values with each character after ya29 and after 1 and
-    before a slash, and real read a JWT, an API key and a token of Backlot's shape as none.
+    Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone, each pair in
+    both orders and `access_token` beside each kind of header, with the rows
+    ``tests/test_google.py`` keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch.
+    The two prefixes are what a byte sweep over the printable ASCII found, 282 values with each
+    character after ya29 and after 1 and before a slash, and real read a JWT, an API key and a token
+    of Backlot's shape as no credential.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()

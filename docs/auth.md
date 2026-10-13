@@ -117,10 +117,10 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
 
 Spelt `Bearer` or `OAuth`, in that case, with a space before the token, as the real APIs read it:
 `bearer <token>`, `token <token>` and `Basic …` are no credential at all there and here. A token in
-the query string (`access_token=…`) is read only when it is shaped like Google's (`ya29.…`), so a
-Backlot token is no credential there either; send it in the header. `me` works as the mailbox id, in
-any case, resolving to whoever the token is; a user's token reads no other mailbox, and the admin
-token reads any.
+the query string (`access_token=…`) with no `Authorization` beside it is read only when it is shaped
+like Google's (`ya29.…`), so a Backlot token there is no credential either; send it in the header.
+`me` works as the mailbox id, in any case, resolving to whoever the token is; a user's token reads
+no other mailbox, and the admin token reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 

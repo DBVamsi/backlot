@@ -377,10 +377,11 @@ acknowledge as `missing_operation` is refused the same way, after `$.xgafv` and 
 caller whose credential resolves gets the 404 or 405 its path gets. Measured against the live Drive,
 Gmail, Sheets, Docs and Slides APIs on 2026-10-11. A token in the query, `access_token`,
 `bearer_token` or `oauth_token`, is read where no header outranks it, and only when it starts
-`ya29.` or `1/` as Google's own do, so a Backlot token there is no credential, on the real APIs as
-here (`backlot.routers.google._query_credential`); a byte-stream read refuses any of those names, in
-any case, with real's 400 `OAuth token was passed in the query parameter…`. Measured against the
-live Drive and Gmail APIs on 2026-10-13.
+`ya29.` or `1/` as Google's own do, but beside a scheme run into its token (`Bearer<t>`), whatever
+it holds. A Backlot token alone in the query is no credential, on the real APIs as here
+(`backlot.routers.google._query_credential`); a byte-stream read refuses any of those names, in any
+case, with real's 400 `OAuth token was passed in the query parameter…`. Measured against the live
+Drive and Gmail APIs on 2026-10-13.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
