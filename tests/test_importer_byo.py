@@ -4795,9 +4795,8 @@ def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
 
 @pytest.mark.windows
 def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path, monkeypatch):
-    """A fresh load replaces a corpus, and it did so by deleting the old DB before reading a single
-    record — so a typo left an operator with no corpus at all: an empty schema-only DB and a
-    tokens.yaml still describing the one that was gone. An --append is already all-or-nothing.
+    """A fresh load replaces a corpus, and a refused one leaves the previous corpus in place
+    (`load_records` says why). An --append is already all-or-nothing.
 
     Every connection the refused load opened is closed by the time it raises, which is what lets
     the half-built DB be unlinked on Windows (`_load_records` has the measurement); off Windows the
