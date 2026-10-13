@@ -16,12 +16,12 @@ to the documents shows.
 caller. Which is which is read off each operation's ``security`` in the documents
 ``backlot.fidelity.comparisons.COMPARISONS["jira"]`` names: one whose requirements do not include
 the empty one, ``{}``, is refused, and so is one the documents give no ``security`` at all. Measured
-on Jira Cloud on 2026-09-30 with no credential, over every operation the baseline lists: all 300
-GETs without ``{}`` answered that 401, as did the two with no ``security`` (`service-registry` once
-its `Content-Type` passed, see below), and all 226 with it reached the operation (a 200, a 404 for
-the key or id that names nothing, a 400, a 403, a 410, or a 401 of the operation's own); all 437
-DELETEs, PUTs and POSTs without it answered the 401 when they carried a body of a type the operation
-takes, and none of the 232 with it did.
+on Jira Cloud with no credential, over every operation the baseline lists, on 2026-09-30 and, for
+the `agents` and `policies` ones, on 2026-10-13: all 306 GETs without ``{}`` answered that 401, as
+did the two with no ``security`` (`service-registry` once its `Content-Type` passed, see below), and
+all 226 with it reached the operation (a 200, a 404 for the key or id that names nothing, a 400, a
+403, a 410, or a 401 of the operation's own); all 447 DELETEs, PUTs and POSTs without it answered
+the 401 when they carried a body of a type the operation takes, and none of the 232 with it did.
 
 Each entry, in both, says what the operation takes, which it checks first, for any caller the
 gateway lets through: ``consumes`` lists the media types, concrete ones before a wildcard, the order
@@ -78,6 +78,16 @@ UNCHECKED = _both(
     "PUT /rest/atlassian-connect/1/addons/{}/properties/{}",
     "PUT /rest/forge/1/app/properties/{}",
 }
+# Documented with a JSON body, and answered the 401 with none and with one typed `application/json`
+# or `text/plain`, and one PUT and one POST of them with `application/xml`, `foo` and an empty type
+# too, on 2026-10-13. With a credential each answered `text/plain` with a 415: the type is checked,
+# but behind the 401 rather than ahead of it.
+CHECKED_PAST_THE_401 = _both(
+    "POST /rest/api/{v}/policies/project/{}/validate",
+    "POST /rest/api/{v}/policies/{}/apply",
+    "POST /rest/api/{v}/policies/{}/remove",
+    "PUT /rest/api/{v}/policies/project/{}/policies",
+)
 # Answered with no body what they answer with a body of a type they take, the 401 where the
 # operation is refused and its own answer where it runs, and a 415 for a `text/plain` one.
 BODY_OPTIONAL = _both(
@@ -166,7 +176,7 @@ PRODUCES = {
 def _entry(key: str, content: list[str] | None) -> dict:
     entry: dict = {}
     types = {**UNDOCUMENTED, **DOCUMENTED_OTHERWISE}.get(key, content)
-    if types and key not in UNCHECKED:
+    if types and key not in UNCHECKED | CHECKED_PAST_THE_401:
         entry["consumes"] = sorted(types, key=lambda t: "*" in t)
         if key in BODY_OPTIONAL:
             entry["body"] = "optional"
@@ -201,8 +211,15 @@ def build() -> dict:
         requirements = security.get(key)
         sort = refused if requirements is None or {} not in requirements else run
         sort[key] = _entry(key, content.get(key))
-    named = UNCHECKED | BODY_OPTIONAL | set(UNDOCUMENTED) | set(DOCUMENTED_OTHERWISE)
-    named |= ACCEPT_UNCHECKED | set(PRODUCES)
+    named = (
+        UNCHECKED
+        | CHECKED_PAST_THE_401
+        | BODY_OPTIONAL
+        | set(UNDOCUMENTED)
+        | set(DOCUMENTED_OTHERWISE)
+        | ACCEPT_UNCHECKED
+        | set(PRODUCES)
+    )
     if named - set(refused) - set(run):
         stale = sorted(named - set(refused) - set(run))
         raise SystemExit(f"measured by name but no longer unserved: {stale}")
