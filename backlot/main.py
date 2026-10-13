@@ -535,6 +535,33 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = ("/github", "/atlassian", "/notion", "/healt
 
 
 @app.middleware("http")
+async def answer_an_atlassian_write_that_fails(request: Request, call_next):
+    """Answer as real does where a Spring service could not write its answer under `Accept`
+    (``errors.atlassian.quality_spring_cannot_copy``; what each answer becomes is
+    ``backlot.routers.atlassian.spring_write_failure``).
+
+    Middleware because real fails as it writes, after the route or the refusal has decided the
+    answer: this reads that answer and replaces it. Registered before the `HEAD` rewrite below, so
+    it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on what it
+    gives as on any answer.
+    """
+    path = request.url.path  # picks the product only
+    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
+    accept = request.headers.get("accept")
+    if not errors.atlassian.owns(path) or not errors.atlassian.quality_spring_cannot_copy(
+        accept, reader=reader
+    ):
+        return await call_next(request)
+    response = await call_next(request)
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    failed = atlassian.spring_write_failure(request, response.status_code, response.headers, body)
+    if failed is None:
+        failed = Response(body, status_code=response.status_code)
+        failed.raw_headers = response.raw_headers
+    return failed
+
+
+@app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
     products and Notion answer one.

@@ -524,14 +524,25 @@ def _java_charset(name: str) -> str | None:
 
 def _python_codec(charset: str) -> str:
     """The Python codec that writes the Java charset ``charset`` names, or ASCII where Python has
-    none by that name (`x-MacRoman` is Python's `mac-roman`); the line it writes is ASCII text."""
-    name = _java_charset(charset) or charset
-    for spelling in (name, name.removeprefix("x-")):
-        try:
-            return codecs.lookup(spelling).name
-        except LookupError:
+    none by Java's name for it (`x-MacRoman`), which writes the ASCII line the same."""
+    try:
+        return codecs.lookup(_java_charset(charset) or charset).name
+    except LookupError:
+        return "ascii"
+
+
+def _split_parameters(text: str) -> list[str]:
+    """``text`` split at every `;` outside double quotes."""
+    parameters, current, quoted = [], "", False
+    for ch in text:
+        if ch == ";" and not quoted:
+            parameters.append(current)
+            current = ""
             continue
-    return "ascii"
+        quoted = not quoted if ch == '"' else quoted
+        current += ch
+    parameters.append(current)
+    return parameters
 
 
 def _parse_media_type(value: str, *, charset_in_any_case: bool = True) -> str | None:
@@ -549,16 +560,7 @@ def _parse_media_type(value: str, *, charset_in_any_case: bool = True) -> str | 
     if not (_TOKEN.fullmatch(kind) and _TOKEN.fullmatch(subtype)) or (kind == "*" != subtype):
         return None
     parsed = f"{kind.lower()}/{subtype.lower()}"
-    parameters, current, quoted = [], "", False
-    for ch in rest:
-        if ch == ";" and not quoted:
-            parameters.append(current)
-            current = ""
-            continue
-        quoted = not quoted if ch == '"' else quoted
-        current += ch
-    parameters.append(current)
-    for parameter in parameters:
+    for parameter in _split_parameters(rest):
         name, eq, given = parameter.strip().partition("=")
         if not eq:
             continue
@@ -671,10 +673,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     is named as sent here, where real says why it could not read it
     (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
     `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and the
-    code are the same.
+    code are the same. Only a parameter named `charset` in that case is a charset to it
+    (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
     """
     value = headers.get("content-type") or ""
-    media_type = _parse_media_type(value) if value else None
+    media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
     if value and "/" not in value:
@@ -731,9 +734,8 @@ def _accept(
     beside others (`,application/json`, `application/json,,`) was passed over on Jira and on
     Confluence's Spring services. A parameter repeated under one name keeps its last value, so
     `q=2;q=0.5` is read and `q=0.5;q=2` is not, and that `q` must be one :func:`_spring_quality`
-    reads (2026-10-13). A `q` named in another case (`Q=2`) is not checked there; real answers one
-    it cannot read further in, with a 500 or a 400 that differ by route, which are not copied, and
-    such a member is unreadable here.
+    reads (2026-10-13). A `q` named in another case (`Q=2`) is not checked here; it is checked as
+    an answer is written (:func:`quality_spring_cannot_copy`).
     """
     ranges, unread = [], False
     for member in (accept or "").split(","):
@@ -741,10 +743,10 @@ def _accept(
         if not member:
             continue
         parsed = _parse_media_type(member, charset_in_any_case=reader == "jira")
-        parameters = [tuple(p.split("=", 1)) for p in parsed.split(";")[1:]] if parsed else []
-        checked = [value for name, value in parameters if name == "q"][-1:] + [
-            value for name, value in parameters if name != "q" and name.lower() == "q"
-        ]
+        parameters = (
+            [tuple(p.split("=", 1)) for p in _split_parameters(parsed)[1:]] if parsed else []
+        )
+        checked = [value for name, value in parameters if name == "q"][-1:]
         if parsed is None or not all(_spring_quality(value) for value in checked):
             unread = True
             continue
@@ -894,6 +896,24 @@ def accepts(
     return False
 
 
+def quality_spring_cannot_copy(accept: str | None, *, reader: str = "jira") -> bool:
+    """Whether a Spring service fails to write its answer under ``accept``: a member JSON matches
+    names its `q` in another case (`Q=2`), the last value of it, in any case, being one
+    :func:`_spring_quality` does not read. Spring checks a `q` so named only as it copies the
+    member's onto the type it writes, and fails there; measured 2026-10-13 with `Q=2`, `Q=abc`,
+    `Q=1.5`, `*/*;Q=2`, `application/*;Q=2` and `q=0.5;Q=2`, where `Q=0.5;q=0.5` and
+    `text/html;Q=2, application/json` were written."""
+    ranges, unread = _accept(accept, reader=reader)
+    if unread:
+        return False
+    for kind, subtype, parameters in ranges:
+        if kind == "*" or (kind == "application" and subtype in ("*", "json", "*+json")):
+            values = [value for name, value in parameters if name.lower() == "q"]
+            if values and not _spring_quality(values[-1]):
+                return True
+    return False
+
+
 def _json_family(accept: str | None) -> str | None:
     """The first type ``accept`` names whose subtype ends `+json`, which a Spring service writes
     its JSON refusal under where nothing in ``accept`` admits plain JSON
@@ -1031,6 +1051,40 @@ def rendered(request, status_code: int, body, headers=None) -> Response | None:
     return None
 
 
+#: Jira's page for a 500 its web layer answers where writing an answer failed
+#: (:func:`quality_spring_cannot_copy`), `text/html;charset=utf-8`, 1703 bytes: the same page on 23
+#: answers measured 2026-10-13 but for a reference of its own to the failure and the response's
+#: `atl-traceid` (:func:`jira_oops_page`).
+_JIRA_OOPS_PAGE = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+    '<meta http-equiv="X-UA-Compatible" content="IE=edge"><title>'
+    "Oops - an error has occurred</title><link type='text/css' rel='stylesheet' href='/static-ass"
+    "ets/metal-all.css' media='all'><script src='/static-assets/metal-all.js'></script>"
+    '<meta name="decorator" content="none" /></head><body class=" error-page error500">'
+    '<script type="text/javascript">document.body.className += " js-enabled";</script>'
+    '<div id="page"><header id="header" role="banner"></header><!-- #header -->'
+    '<section id="content" role="main"><div class="aui-page-panel">'
+    '<div class="aui-page-panel-inner"><section class="aui-page-panel-content lowerContent">'
+    '<div id="error-state"><span class="error-type"></span><h1>Something went wrong</h1><p>'
+    'Try reloading the page, then check our <a href="https://status.atlassian.com">Statuspage</a>'
+    ' for any current outages. If there are no relevant outages, create a <a href="https://suppor'
+    't.atlassian.com/contact/">support request</a> so we can help you out.</p><p>'
+    "If you create a request, include the following so we can help you as fast as possible:</p>"
+    "<ul><li>Error type: <strong>500 - Internal server error</strong></li><li>"
+    "Log reference: <strong>{log}</strong></li><li>TraceId: <strong>{trace}</strong></li></ul>"
+    "</div></section><!-- .aui-page-panel-content --></div><!-- .aui-page-panel-inner --></div>"
+    '<!-- .aui-page-panel --></section><!-- #content --><footer id="footer" role="contentinfo">'
+    '<section class="footer-body"><div id="footer-logo">'
+    '<a href="http://www.atlassian.com/" rel="nofollow">Atlassian</a></div></section></footer>'
+    "<!-- #footer --></div><!-- #page --></body></html>"
+)
+JIRA_OOPS_MEDIA_TYPE = "text/html;charset=utf-8"
+
+
+def jira_oops_page(log_reference: str, trace_id: str) -> bytes:
+    return _JIRA_OOPS_PAGE.replace("{log}", log_reference).replace("{trace}", trace_id).encode()
+
+
 #: The `Allow` Jira's 401 carries where `Accept` holds a member it cannot read, and the one its 500
 #: carries where `Accept` names a wildcard it has no type for (:func:`jira_unauthenticated`).
 _JIRA_UNREAD_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"
@@ -1039,7 +1093,10 @@ _JIRA_NO_TYPE_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"
 
 def _quality(parameters: list[tuple[str, str]]) -> float:
     given = next((value for name, value in reversed(parameters) if name.lower() == "q"), "1")
-    return float(_unquoted(given.strip()).strip().rstrip("fFdD"))
+    # a `Q` Spring cannot read sorts as any other (the answer is a 500 then,
+    # ``backlot.routers.atlassian.spring_write_failure``)
+    text = _unquoted(given.strip()).strip()
+    return float(text.rstrip("fFdD")) if _spring_quality(text) else 1.0
 
 
 def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str, str]]:
@@ -1063,7 +1120,9 @@ def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str,
     - otherwise the member with the highest `q`, the first of those tied, `q=0` counting as any
       other value does (`application/json;q=0.5, text/plain` and `text/plain, application/json`
       are both `text/plain`): its type lower-cased, `foo/bar` and `image/png` included, its other
-      parameters but `q` kept (`application/json;level=1`), with `;charset=UTF-8` or with the
+      parameters but `q` kept in their order (`application/json;level=1`), a `q` named in another
+      case kept as `q` but on a JSON type naming no charset (`application/json;Q=0.5`,
+      `text/plain;q=0.5;x=y` for `text/plain;Q=0.5;x=y`), and last `;charset=UTF-8` or the
       charset the member names, spelled as it spells it and unquoted, the line encoded in it
       (UTF-16, `utf-16` or `utf16`, is 108 bytes, big-endian behind a byte-order mark; UTF-32 is
       212, big-endian behind none; `x-MacRoman`, a charset Java knows and Python by another name, is
@@ -1094,7 +1153,13 @@ def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str,
         if kind not in ("text", "application"):
             return 500, "text/html;charset=utf-8", b"", {"Allow": _JIRA_NO_TYPE_ALLOW}
         subtype = "plain" if kind == "text" else "json"
-    kept = [(n, v) for n, v in parameters if n.lower() != "charset" and n != "q"]
+    names_charset = any(n.lower() == "charset" for n, _ in parameters)
+    keeps_case = (subtype == "json" or subtype.endswith("+json")) and not names_charset
+    kept = [
+        ("q" if n.lower() == "q" and not keeps_case else n, v)
+        for n, v in parameters
+        if n.lower() != "charset" and n != "q"
+    ]
     charset = next(
         (_unquoted(v) for n, v in reversed(parameters) if n.lower() == "charset"), "UTF-8"
     )
@@ -1889,12 +1954,13 @@ def head_content_length(path: str, status_code: int) -> bool:
     695), and the 404s, the 405 and the CQL 400 declare none. Jira's answers are chunked and
     declare none on either method (2026-09-22), but for the 401 it refuses a caller with no
     credential with (:data:`JIRA_UNAUTHENTICATED`), which declares its 53 bytes, and the `HEAD`
-    beside it declares the same (`myself`, 2026-09-30). Confluence's 406 declares its length but
+    beside it declares the same (`myself`, 2026-09-30), and its 500 page (:func:`jira_oops_page`,
+    on `serverInfo` and `myself`, 2026-10-13). Confluence's 406 declares its length but
     on `search` (Tomcat's page on `space`, 441 bytes, and nothing on `search`'s empty one,
     2026-10-13).
     """
     if not is_confluence(path):
-        return status_code == 401
+        return status_code in (401, 500)
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False
     return 200 <= status_code < 300 or status_code == 406

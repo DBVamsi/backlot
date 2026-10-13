@@ -4216,6 +4216,10 @@ _JSON = "application/json"
         ("PUT", _BANNER, "none", "application/json;charset=latin1", "{}", 401, None, None),
         ("PUT", _BANNER, "none", 'application/json;charset="utf-8"', "{}", 401, None, None),
         ("PUT", _BANNER, "none", "application/json;x", "{}", 401, None, None),
+        # a charset Java does not name is no charset, whatever its case, and one it names is read
+        ("PUT", _BANNER, "none", "application/json;charset=u8", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "application/json;Charset=u8", "{}", 415, _UNREAD, _JSON),
+        ("PUT", _BANNER, "none", "application/json;charset=x-MacRoman", "{}", 401, None, None),
         # an `OPTIONS` is not checked, and an unreadable bearer is refused before the check
         ("OPTIONS", _BANNER, "none", "text/plain", "x", 401, None, None),
         ("PUT", _BANNER, "unreadable-bearer", "text/plain", "x", 403, None, None),
@@ -4359,6 +4363,9 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
                 ("foo, application/json", "json"),
                 ("application/jsonx", "xml"),
                 ("application/json-patch+json", "xml"),
+                ("application/*, application/json;q=0.5", "xml"),
+                ("*/*, application/json;q=0.5", "xml"),
+                ("*/json", "xml"),
             )
         ),
     ],
@@ -5267,6 +5274,23 @@ _JSON_TYPE = "application/json"
         ),
         ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
         + ("Invalid mime type \"foo\": does not contain '/'",),
+        # a charset Java does not name, in the case Spring checks, and one named in another case
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data; boundary=x; charset=u8",
+            415,
+            "'multipart/form-data; boundary=x; charset=u8'",
+        ),
+        (
+            "POST",
+            "/wiki/rest/api/content/abc123/child/attachment",
+            None,
+            "multipart/form-data; boundary=x; Charset=bogus",
+            403,
+            errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        ),
         (
             "POST",
             "/wiki/rest/api/content/abc123/child/attachment",
@@ -5433,6 +5457,13 @@ _COLUMNS_PRODUCE = (
     "application/json;charset=UTF-8, application/json, application/*+json, application/yaml, "
     "application/xml, text/xml, application/*+xml"
 )
+
+
+#: Jira's 500 page as real sent it, its length and the SHA-256 of its text with the log reference
+#: and the trace id read as `<log>` and `<trace>` (``errors.atlassian.jira_oops_page``).
+_JIRA_OOPS = (1703, "8f3cc6f7eac5d1b3d98f513cfc5094be6465a48d66717d8b409787c6c7a8d114")
+_Q2 = "application/json;Q=2"
+_OOPS_MEDIA = "text/html;charset=utf-8"
 
 
 def _unparsed(accept: str) -> bytes:
@@ -5805,6 +5836,52 @@ _ACCEPT_ROWS = [
     + ({"accept": _COLUMNS_PRODUCE},),
     ("DELETE", "/atlassian/rest/api/2/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
     + ({"accept": _COLUMNS_PRODUCE},),
+    # -- a `q` named in another case that Spring cannot read
+    # (``backlot.routers.atlassian.spring_write_failure``), on Jira
+    *(
+        ("GET", path, credential, accept, None, 500, _OOPS_MEDIA, "oops", {})
+        for path, credential, accept in (
+            (_INFO, "none", _Q2),
+            (_INFO, "none", "application/json;Q=abc"),
+            (_INFO, "none", "*/*;Q=2"),
+            (_INFO, "none", "application/json;q=0.5;Q=2"),
+            ("/atlassian/rest/api/3/issue/{issue[key]}/comment?orderBy=bogus", "admin", _Q2),
+            ("/atlassian/rest/api/3/search/jql?jql=project%3D{project}", "admin", _Q2),
+        )
+    ),
+    ("GET", "/atlassian/rest/api/3/myself", "none", _Q2, None, 500, _OOPS_MEDIA, "oops")
+    + ({"www-authenticate": _PRESENT},),
+    ("HEAD", _INFO, "none", _Q2, None, 500, _OOPS_MEDIA, b"", {"content-length": "1703"}),
+    ("OPTIONS", _INFO, "none", _Q2, None, 500, _OOPS_MEDIA, b"")
+    + ({"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE", "www-authenticate": _PRESENT},),
+    ("GET", _INFO, "none", "application/json;Q=0.5;q=0.5", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "text/html;Q=2, application/json", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _ISSUE_NOPE, "none", _Q2, None, 404, _JIRA_JSON, None, {}),
+    ("GET", _SEARCH, "admin", _Q2, None, 400, _JIRA_JSON, None, {}),
+    ("POST", _INFO, "none", _Q2, None, 405, _PROBLEM, None, {}),
+    # and on Confluence
+    ("GET", _SPACES, "admin", _Q2, None, 400, None, b"", {"content-length": "0"}),
+    ("HEAD", _SPACES, "admin", _Q2, None, 400, None, b"", {"content-length": None}),
+    ("GET", "/atlassian/wiki/rest/api/content/{content}", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", _SPACES, "none", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=abc", "admin", _Q2, None, 400, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=-1", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/content?type=bogus", "admin", _Q2, None, 501, None, b"", {}),
+    ("DELETE", _SPACES, "admin", _Q2, None, 405, _TOMCAT, "page", {"allow": "GET, POST"}),
+    ("POST", _ATTACH, "admin", _Q2, ("text/plain", b"x"), 415, _TOMCAT, "page")
+    + ({"accept": "multipart/form-data"},),
+    ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    ("GET", _SPACES, "admin", "text/html;Q=2", None, 406, _TOMCAT, "page", {}),
+    ("HEAD", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE, b"")
+    + ({"content-length": None},),
+    ("OPTIONS", _CQL, "admin", _Q2, None, 400, "text/plain", _unparsed(_Q2), {}),
+    ("GET", _SPACES, "unparseable-basic", _Q2, None, 401, _JSON, None, {}),
+    ("OPTIONS", "/atlassian/wiki/rest/api/nope<script>", "admin", _Q2, None, 403, "text/html", None)
+    + ({"content-length": "919"},),
+    ("GET", _CQL, "admin", 'application/json;x="a;b"', None, 200, _JSON, None, {}),
 ]
 
 _ACCEPT_CREDENTIALS = {
@@ -5906,6 +5983,25 @@ _JIRA_401 = [
     ("OPTIONS", 'application/json;q="0.5"', 401, "application/json;charset=UTF-8", _LINE, {}),
     ("OPTIONS", "application/json;q=2;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
     ("OPTIONS", "text/htm, application/json", 401, "text/htm;charset=UTF-8", _LINE, {}),
+    # a `q` named in another case, in the type
+    *(
+        ("OPTIONS", accept, 401, media_type, _UTF16_LINE if "utf-16" in accept else _LINE, {})
+        for accept, media_type in (
+            ("application/json;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
+            ("application/json;level=1;Q=0.5", "application/json;level=1;Q=0.5;charset=UTF-8"),
+            ("application/hal+json;Q=0.5", "application/hal+json;Q=0.5;charset=UTF-8"),
+            ("application/json;q=0.5;Q=0.5", "application/json;Q=0.5;charset=UTF-8"),
+            ("application/json;charset=utf-16;Q=0.5", "application/json;q=0.5;charset=utf-16"),
+            ("text/plain;Q=0.5;x=y", "text/plain;q=0.5;x=y;charset=UTF-8"),
+            ("application/xml;Q=0.5", "application/xml;q=0.5;charset=UTF-8"),
+            ("application/json;charset=utf-8;level=1", "application/json;level=1;charset=utf-8"),
+            ("application/json;level=1;q=0.5", "application/json;level=1;charset=UTF-8"),
+        )
+    ),
+    ("OPTIONS", "text/plain;q=0.1;q=1, application/json", 401, "text/plain;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "text/plain;q=1;q=0.1, application/json", 401, "application/json;charset=UTF-8")
+    + (_LINE, {}),
     # `text/html` first found past the header's start is the page's type, ahead of the `q` order
     ("OPTIONS", "application/json, text/html", 401, "text/html;charset=UTF-8", _LINE)
     + ({"x-frame-options": "SAMEORIGIN"},),
@@ -6019,6 +6115,17 @@ def test_atlassian_answers_an_accept_where_and_as_real_does(
     r = client.send(request)
     assert r.status_code == status, r.text
     assert r.headers.get("content-type") == media_type
+    if body == "oops":
+        trace = r.headers["atl-traceid"]
+        assert f"TraceId: <strong>{trace}</strong>" in r.text
+        page = re.sub(
+            r"Log reference: <strong>[0-9a-f-]{36}</strong>",
+            "Log reference: <strong><log></strong>",
+            r.text,
+        )
+        page = page.replace(f"<strong>{trace}</strong>", "<strong><trace></strong>")
+        assert (len(r.content), hashlib.sha256(page.encode()).hexdigest()) == _JIRA_OOPS
+        body = None
     if isinstance(body, str):
         body = _accept_body(body, status, path.split("?")[0][len("/atlassian") :])
         if status in _TOMCAT_LENGTHS and media_type == _TOMCAT:

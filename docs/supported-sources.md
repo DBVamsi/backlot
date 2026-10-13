@@ -66,17 +66,19 @@ the `errors` list under a `+json` type the header names, and no body at all on `
 other JAX-RS services; a 405 and a 415 take the same shapes, the page naming the methods or the
 types the route takes. Where any member of `Accept` cannot be read the 406 has no body, and the
 JAX-RS services, which pass a member with no `/` over, answer a header they cannot parse with a 400
-in its place. A path no route serves is JAX-RS's own 404 — JSON where `application/json` is the
-first type `Accept` names that JSON or XML matches, ordered by `q` and then by how specific each is,
-the `<status>` XML document otherwise — and a path below `space/` or `content/`, or
-anything under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with
-no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence
-publishes that no route here serves answers a `Content-Type` it does not take with its 415 (or, from
-the JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller is; past that
-it refuses a caller with no credential with a served route's 403, or from a few services with
-`Current user not permitted to use Confluence`, and a caller whose credential resolves gets the 404
-an unserved path gets, or at a served route's path its 405. Every answer Confluence itself gives
-carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
+in its place. A `q` named in another case (`Q=2`) that is no quality fails an answer as it is
+written: a 200 is a 400 with no body, a refusal Spring raised is Tomcat's page and one the service
+raised its status with no body. A path no route serves is JAX-RS's own 404 — JSON where
+`application/json` is the first type `Accept` names that JSON or XML matches, ordered by `q` and
+then by how specific each is, the `<status>` XML document otherwise — and a path below `space/` or
+`content/`, or anything under `/wiki` outside the API mount, is the product's HTML 404 page instead;
+a caller with no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation
+Confluence publishes that no route here serves answers a `Content-Type` it does not take with its
+415 (or, from the JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller
+is; past that it refuses a caller with no credential with a served route's 403, or from a few
+services with `Current user not permitted to use Confluence`, and a caller whose credential resolves
+gets the 404 an unserved path gets, or at a served route's path its 405. Every answer Confluence
+itself gives carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
 `x-confluence-request-time`, `x-content-type-options` and `x-xss-protection`, what the content and
 space services' routes answer adds the three headers that say the v1 REST API is deprecated, and
 what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Accept`, adds the
@@ -410,7 +412,9 @@ Connect token is the bare `application/json`, or XML where `Accept` names `appli
 An `Accept` admitting no JSON draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead
 of the 401, a bad parameter's 400 and whatever the route answers, on every operation but the ones
 `backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
-body; the 401 takes its media type from `Accept`.
+body; the 401 takes its media type from `Accept`. A `q` named in another case (`Q=2`) that is no
+quality fails an answer as it is written: a route's answer, the 401 and the `orderBy` refusal are
+Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the

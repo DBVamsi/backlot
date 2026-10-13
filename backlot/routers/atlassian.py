@@ -3190,6 +3190,80 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     return None
 
 
+#: The start of the `orderBy` refusal (:func:`_jira_order_desc`), which real writes as it writes an
+#: answer, where its other refusals are written by what refused them.
+_JIRA_ORDER_REFUSAL = "The field to order by must be one of ["
+
+
+def spring_write_failure(request: Request, status: int, headers, body: bytes) -> Response | None:
+    """What real answers where a Spring service fails to write an answer under the request's
+    `Accept` (``errors.atlassian.quality_spring_cannot_copy``), given the answer this server built,
+    or None where real answers as it would have. Measured 2026-10-13 under `application/json;Q=2`
+    on every route here and on each refusal below.
+
+    Jira: a JSON answer that succeeded, the 401 it answers a caller with no credential, and the
+    `orderBy` refusal are its 500 page (``errors.atlassian.jira_oops_page``; an `OPTIONS` gets the
+    500 with no body and seven methods in `Allow` its 401 picker gives a wildcard it has no type
+    for). Its other refusals are written as they would have been.
+
+    Confluence: a JSON answer that succeeded is a 400 with no body; a refusal Spring raised itself
+    (the `errors` list of a 405 or a 415, a `org.springframework` exception, the anonymous 403) is
+    Tomcat's page for its status, as an `Accept` taking no JSON draws it, or the product's HTML
+    404 page for a 404; a refusal the API's own service layer raised is its status with no body; an
+    `OPTIONS` is Tomcat's 403 page; and the JAX-RS 404 of a path no route serves is a 500 with no
+    body. `search` reads the `q` itself (``errors.atlassian._jaxrs_accept``), and the 401 for a
+    Basic value Confluence cannot read is Tomcat's page either way.
+    """
+    media_type = headers.get("content-type") or ""
+    is_json = media_type.startswith("application/json")
+    # the decoded path picks the product, the service and the page's headers; nothing echoes it
+    if not errors_atlassian.is_confluence(request.url.path):
+        gate = status == 401 and "www-authenticate" in headers
+        refusal = status == 400 and is_json and _JIRA_ORDER_REFUSAL.encode() in body
+        if not (gate or refusal or (200 <= status < 300 and is_json)):
+            return None
+        kept = {"WWW-Authenticate": headers["www-authenticate"]} if gate else {}
+        media = errors_atlassian.JIRA_OOPS_MEDIA_TYPE
+        if request.method == "OPTIONS":
+            allow = {"Allow": errors_atlassian._JIRA_NO_TYPE_ALLOW}
+            return Response(b"", status_code=500, media_type=media, headers={**kept, **allow})
+        trace = request_ids(request)["atl-traceid"]
+        page = errors_atlassian.jira_oops_page(synth._uuid_from(f"oops:{trace}"), trace)
+        return Response(page, status_code=500, media_type=media, headers=kept)
+    vendor_path = _vendor_path(request.url.path)
+    if vendor_path.startswith("/wiki/rest/api/search"):
+        return None
+    if request.method == "OPTIONS":
+        return errors_atlassian.confluence_refusal(403, b"", "text/html")
+    if status == 404 and b"null for uri:" in body:
+        return Response(b"", status_code=500)
+    if not is_json or status == 401:
+        return None
+    if 200 <= status < 300:
+        return Response(b"", status_code=400)
+    refused = json.loads(body)
+    message = refused.get("message", "") if isinstance(refused, dict) else ""
+    spring = isinstance(refused.get("errors"), list) or message.startswith(
+        ("org.springframework.", "com.atlassian.confluence.mvc.rest.common.exception.")
+    )
+    if not spring:
+        return Response(b"", status_code=status)
+    if status == 404:
+        return Response(
+            errors_atlassian.HTML_NOT_FOUND, 404, media_type=errors_atlassian.HTML_MEDIA_TYPE
+        )
+    page_headers = {}
+    if status == 405:
+        page_headers = dict(
+            errors_atlassian.method_not_allowed(request.url.path, request.method).headers
+        )
+    elif status == 415:
+        for verb, pattern, consumes in _CONFLUENCE_CONSUMES:
+            if verb == request.method and pattern.fullmatch(vendor_path):
+                page_headers = {"Accept": ", ".join(consumes)}
+    return errors_atlassian.confluence_refusal(status, b"", "text/html", page_headers)
+
+
 def _vendor_path(path: str) -> str:
     return (
         path[len(errors_atlassian.PREFIX) :] if path.startswith(errors_atlassian.PREFIX) else path
@@ -3294,10 +3368,15 @@ def _search_options(request: Request) -> Response:
     are 200 `application/xml` with the resource's WADL (3016 bytes on the site, the same bytes on
     every one of six), a request with no `Accept` header at all is the same document as
     `application/vnd.sun.wadl+xml`, and `application/json` and `text/html` are 204 with no body.
-    All name the three methods in `Allow`.
+    All name the three methods in `Allow`. A header Jersey cannot parse is its 400
+    (``errors.atlassian._jaxrs_accept``; `application/json;Q=2`, 2026-10-13).
     """
     headers = {"Allow": errors_atlassian.CONFLUENCE_SEARCH_OPTIONS_ALLOW}
     accept = request.headers.get("accept")
+    # the decoded path picks the product only; the 400 echoes the header, not the path
+    unparsed = errors_atlassian.not_acceptable(request.url.path, accept, jaxrs=True)
+    if unparsed is not None and unparsed.status_code == 400:
+        raise unparsed
     if accept is None:
         media_type = "application/vnd.sun.wadl+xml"
     elif "*/*" in accept or "application/xml" in accept:
