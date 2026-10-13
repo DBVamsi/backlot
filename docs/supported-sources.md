@@ -69,15 +69,16 @@ place. A path no route serves is JAX-RS's own 404 — JSON when the caller asks 
 by name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or
 anything under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with
 no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence
-publishes that no route here serves refuses a caller with no credential with a served route's 403,
-or from a few services with `Current user not permitted to use Confluence`, after the 415 of a write
-that checks the `Content-Type` first; a caller whose credential resolves gets the 404 an unserved
-path gets, or at a served route's path its 405. Every answer Confluence itself gives carries
-`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
-`x-content-type-options` and `x-xss-protection`, what the content and space services' routes answer
-adds the three headers that say the v1 REST API is deprecated, and what `search` answers a `GET` or
-`HEAD`, but for a 401 and a refusal of its `Accept`, adds the `cache-control` and 1970 `expires`
-that say not to cache it.
+publishes that no route here serves answers a `Content-Type` it does not take with its 415 (or, from
+the JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller is; past that
+it refuses a caller with no credential with a served route's 403, or from a few services with
+`Current user not permitted to use Confluence`, and a caller whose credential resolves gets the 404
+an unserved path gets, or at a served route's path its 405. Every answer Confluence itself gives
+carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
+`x-confluence-request-time`, `x-content-type-options` and `x-xss-protection`, what the content and
+space services' routes answer adds the three headers that say the v1 REST API is deprecated, and
+what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Accept`, adds the
+`cache-control` and 1970 `expires` that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -108,7 +109,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
 | `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured. `labels`: comma-separated names, all required, matched without case; the last repeated parameter is read, and commas alone or whitespace alone filter nothing |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
 | `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |
@@ -420,25 +421,25 @@ gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400
 Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
 other method it does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns
 back a path that carries a script tag or a directory step with a 403, and the CDN one with a `%00`
-byte with a 400, each its own page; an encoded slash or backslash under `/wiki/` (but
-`/wiki/spaces/`) is Confluence's own 400, where Jira takes it apart and routes what it decodes to. A
-path no route serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes
-nothing at it; at an operation it publishes and no route here serves — reached by a path with no
-route or by a method a served route does not take — a `Content-Type` the operation does not take is
-its 415 for any caller the gateway lets through, and after that a caller with no credential gets
-Jira's 401 where the operation will not run anonymously (`backlot/data/jira_unserved.json`);
-otherwise it is the operation's own answer, an issue's or a project's 404 for a key that names
-nothing, and the no-route 404, or on a served route's path its 405, is the gap the baseline
-acknowledges. That is under `/atlassian/rest` only: outside the two API mounts the site is its web
-app, `/browse` at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found
-page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`,
-`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
-`cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
-`PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
-burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
-where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
-request carries none of those five, and the no-endpoint 404, a 405, a 406 and an unserved
-operation's 415 carry the account id alone.
+byte or a `%` that two hex digits do not follow with a 400, each its own page; an encoded slash or
+backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, where Jira takes it apart
+and routes what it decodes to. A path no route serves is RFC 7807 at 404 with
+`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
+no route here serves — reached by a path with no route or by a method a served route does not take —
+a `Content-Type` the operation does not take is its 415 for any caller the gateway lets through, and
+after that a caller with no credential gets Jira's 401 where the operation will not run anonymously
+(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
+project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
+405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
+mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
+`/jira/for-you`, and Jira's own not-found page for the rest. Every answer past the CDN carries
+`atl-request-id`, `atl-traceid`, `x-content-type-options` and `x-xss-protection`, and Jira's own
+answers add `x-arequestid`, `cache-control` and `timing-allow-origin`, which the gateway's refusals
+(the Connect-token 403, a `PATCH`) do not carry; a caller whose credential resolves also gets its
+own `x-aaccountid`, and the burst quota's four (`ratelimit`, `ratelimit-policy`,
+`x-ratelimit-limit`, `x-ratelimit-remaining`) where a route answers or an `OPTIONS` asks at one,
+counted per method and route. An anonymous request carries none of those five, and the no-endpoint
+404, a 405, a 406 and an unserved operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
@@ -517,10 +518,19 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
 | `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
 | `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`, `fetch-owner`; `KeyCount` and the continuation tokens, an `Owner` on every object only under `fetch-owner=true` |
-| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; and checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
+| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400; and `If-Match`, `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since`, read as real reads them and answered with its 304 or 412 ahead of the range and the part. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
 | `HeadObject` | |
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |
 | `ListParts` | Always `NoSuchUpload`, since no upload is ever in progress; `max-parts` and `part-number-marker` validated first, as real does |
+
+An object's GET and HEAD also read the six `response-*` query parameters, `response-content-type`,
+`response-content-language`, `response-expires`, `response-cache-control`,
+`response-content-disposition` and `response-content-encoding`: each sets the header it names on the
+200 and the 206, every one but `Content-Type` on a 304, and leaves the bytes as stored. Their names
+are case-sensitive, a repeated one is read from its first value, and a control character other than
+a tab comes back as a space. A value real cannot put in a header, a non-Latin-1 character or an
+unclosed quote, is its 400 `InvalidArgument`, and an unsigned GET or HEAD carrying an override its
+400 `InvalidRequest`.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A

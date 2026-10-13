@@ -18,6 +18,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
@@ -264,10 +265,10 @@ def _jira_caller(request: Request) -> Caller:
 def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Caller:
     """The caller for a Confluence read, refusing where Jira would go anonymous.
 
-    Confluence rejects the request outright, and which refusal depends on the credential rather
-    than on the route: a pair it read and rejected, and a request carrying none, are its 403; a
-    Basic value it could not read is a 401 naming the site's OAuth realm. Measured on both sites
-    on 2026-09-04, every route and every credential shape (see ``auth.basic_credential_kind``).
+    Confluence rejects the request outright: a pair it read and rejected, and a request carrying
+    none, are a 403 (which one is the route's, below); a Basic value it could not read is a 401
+    naming the site's OAuth realm on every route. Measured on both sites on 2026-09-04, every route
+    and every credential shape (see ``auth.basic_credential_kind``).
 
     ``not_permitted`` picks the other anonymous 403, the one `search` gives
     (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
@@ -285,10 +286,9 @@ def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Call
             headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
         )
     if not_permitted:
-        # message first, as real orders it; `vendor_headers` adds search's cache-control and expires
         raise errors_atlassian.AtlassianError(
             403,
-            {"message": errors_atlassian.CONFLUENCE_NOT_PERMITTED, "statusCode": 403},
+            json.loads(errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY),
             media_type="application/json",
         )
     raise HTTPException(status_code=403, detail=errors_atlassian.CONFLUENCE_FORBIDDEN)
@@ -505,33 +505,71 @@ async def jira_project_roles(key: str, request: Request):
     return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
 
 
+def _java_digit(ch: str, radix: int) -> int | None:
+    """``ch`` as Java's `Character.digit` reads it in ``radix``: a decimal digit of any script in
+    the Basic Multilingual Plane (`١`, `１`), and in hexadecimal `a` to `f` in either case,
+    full-width ones included (`Ａ`); a character past U+FFFF is two `char`s to Java, neither of them
+    a digit."""
+    if ord(ch) > 0xFFFF:
+        return None
+    decimal = unicodedata.decimal(ch, None)
+    if decimal is not None:
+        return decimal
+    folded = ch.lower()
+    for first in ("a", "\uff41"):
+        if radix == 16 and ord(first) <= ord(folded) <= ord(first) + 5:
+            return ord(folded) - ord(first) + 10
+    return None
+
+
 def _java_long(raw: str) -> int | None:
     """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
     (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
-    optional `-`, otherwise decimal digits with an optional sign, within a `long`. Measured on
-    `project/{key}/role/{id}` 2026-10-13: `-1`, `+1`, `%201`, `0x1` and 9223372036854775807 read,
-    and `abc`, `1.5`, `1e3` and 99999999999999999999 not."""
+    optional `-` in front, otherwise decimal with an optional sign, each digit as
+    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
+    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
     text = errors_atlassian.strip_java_whitespace(raw)
-    hexadecimal = re.fullmatch(r"(-?)(?:0[xX]|#)([0-9a-fA-F]+)", text)
-    if hexadecimal:
-        value = int(hexadecimal.group(2), 16) * (-1 if hexadecimal.group(1) else 1)
-    elif re.fullmatch(r"[+-]?\d+", text) and max(map(ord, text)) <= 0xFFFF:
-        value = int(text)
+    negative = text.startswith("-")
+    rest = text[1:] if negative else text
+    if rest.startswith(("0x", "0X", "#")):
+        radix, digits = 16, rest[1:] if rest.startswith("#") else rest[2:]
     else:
+        radix, digits = 10, (text[1:] if text.startswith(("+", "-")) else text)
+    if not digits:
         return None
+    value = 0
+    for ch in digits:
+        digit = _java_digit(ch, radix)
+        if digit is None:
+            return None
+        value = value * radix + digit
+        if value > 2**63:
+            return None
+    value = -value if negative else value
     return value if -(2**63) <= value < 2**63 else None
+
+
+def _role_id(request: Request, raw: str) -> int:
+    """A project role's id as real reads it (:func:`_java_long`), or the 400 it answers: one naming
+    the variable as missing where removing the whitespace leaves nothing
+    (``errors.atlassian.missing_path_variable``) and one naming the value it could not convert
+    otherwise. Real answers either ahead of the project's 404 and, on a write, behind its 415, for
+    every caller (2026-10-13)."""
+    if errors_atlassian.strip_java_whitespace(raw) == "":
+        raise errors_atlassian.missing_path_variable(_echoed_path(request), "id")
+    role = _java_long(raw)
+    if role is None:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [raw])
+    return role
 
 
 @router.get("/rest/api/3/project/{key}/role/{role_id}")
 async def jira_project_role(
     key: str, request: Request, role_id: str = PathParameter(json_schema_extra={"type": "integer"})
 ):
-    """One project role. Its id is read the way real reads it (:func:`_java_long`), and one it
-    cannot read is the 400 naming it as `id`, ahead of the project's 404, for every caller
-    (measured 2026-10-13); the schema still declares the integer the vendor's document does."""
-    role = _java_long(role_id)
-    if role is None:
-        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [role_id])
+    """One project role, its id read as :func:`_role_id` reads it; the schema still declares the
+    integer the vendor's document does."""
+    role = _role_id(request, role_id)
     conn = auth.conn(request)
     container = _require_project(request, conn, key)
     actors = []
@@ -756,6 +794,11 @@ async def jira_search(request: Request):
         jql = _str_param(request, "jql") or ""
         max_results_sent = _jira_max_results_was_sent(request)
         limit = _int_param(request, "maxResults", default_size)
+        # Each conversion is refused ahead of the page token, the range and the unbounded JQL:
+        # `maxResults` first, then `fieldsByKeys`, then `reconcileIssues`, whichever order the
+        # query sends them in (measured 2026-10-12).
+        _bool_param(request, "fieldsByKeys")
+        _jira_long_list_param(request, "reconcileIssues")
         token = _str_param(request, "nextPageToken")
         reconcile_null = False
     # An undecodable token is refused before the project clause is resolved (measured
@@ -2226,6 +2269,67 @@ def _int_param(
     return n
 
 
+# The words `_bool_param` reads, and the value each one stands for.
+_JIRA_QUERY_BOOLEANS = {
+    "true": True,
+    "on": True,
+    "yes": True,
+    "1": True,
+    "false": False,
+    "off": False,
+    "no": False,
+    "0": False,
+}
+
+
+def _bool_param(request: Request, name: str, default: bool | None = None) -> bool | None:
+    """One query parameter as a boolean, read the way Jira reads `search/jql`'s `fieldsByKeys`
+    (Jira Cloud, 2026-10-12).
+
+    The first value is the one read. What Java's `String.trim` removes comes off it, every character
+    up to U+0020 at either end (`%01true` is read), and no character past U+0020 does (`%C2%A0true`
+    and `%E2%80%80true` are refused). What is left matches a key of :data:`_JIRA_QUERY_BOOLEANS` in
+    any case, compared the way Java's `equalsIgnoreCase` compares, which also reads `ſ` (U+017F) as
+    `s`. A lone empty value is the default. A value the trim empties is refused (`%20`, `%01`), and
+    so is an empty first value of a repeated parameter (`?fieldsByKeys=&fieldsByKeys=yes`).
+    """
+    values = request.query_params.getlist(name)
+    if not values or values == [""]:
+        return default
+    word = values[0].strip(_JAVA_TRIMMED).lower().replace("\u017f", "s")
+    if word not in _JIRA_QUERY_BOOLEANS:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
+    return _JIRA_QUERY_BOOLEANS[word]
+
+
+def _jira_long_list_param(request: Request, name: str) -> list[int]:
+    """Every value of a repeated query parameter as a Java `long`, as Jira converts the
+    `reconcileIssues` of a `search/jql` GET (Jira Cloud, 2026-10-12).
+
+    `?reconcileIssues=1&reconcileIssues=2` is served, and a value that will not convert is refused
+    wherever it sits: `1&a` names the array as `a&1` does, where :func:`_int_param` reads the first
+    value alone. A value :func:`errors_atlassian.strip_java_whitespace` empties is passed over, as
+    in `?reconcileIssues=%20&reconcileIssues=1`. The rest convert by :func:`_int_param`'s rules, so
+    `1,2` is refused rather than split.
+    """
+    values = request.query_params.getlist(name)
+    numbers = []
+    for raw in values:
+        cleaned = errors_atlassian.strip_java_whitespace(raw)
+        if cleaned == "":
+            continue
+        try:
+            if "_" in cleaned or any(ch.isspace() for ch in cleaned):
+                raise ValueError(cleaned)
+            n = int(cleaned)
+        except ValueError:
+            n = None
+        if n is None or not JAVA_LONG[0] <= n <= JAVA_LONG[1]:
+            raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
+        numbers.append(n)
+    return numbers
+
+
 def _reject_json_constant(value: str):
     """A `parse_constant` hook. Python's decoder reads `NaN`, `Infinity` and `-Infinity`, which real
     refuses as malformed JSON (measured 2026-10-06, `-Infinity` 2026-10-09), so raising here sends
@@ -2765,8 +2869,9 @@ _CONFLUENCE_NOT_PERMITTED_GETS = (
 #: `missing_operation`, these 23 answered a JSON body or none with
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` (but the two that ran,
 #: :data:`_CONFLUENCE_RUN_ANONYMOUSLY`), another type with an empty 415 (but the three under
-#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` with no `/`
-#: (`foo`) with Tomcat's 400 page (:func:`_confluence_jaxrs_media_refusal`).
+#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` Jersey cannot
+#: read (`foo`) with Tomcat's 400 page, the two that ran included
+#: (``errors.atlassian.jaxrs_media_type_refusal`` has which values those are).
 _CONFLUENCE_JAXRS_WRITES = tuple(
     f"{method} /wiki/rest/{path}"
     for method, path in (
@@ -2984,11 +3089,9 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
 
 def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
     """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
-    it will not read, or None: Tomcat's 400 page for one that cannot be read as a type, and an empty
-    415 with no `content-type` for a type other than JSON, where the service checks the type (all
-    but :data:`_CONFLUENCE_JAXRS_UNTYPED`). A request with no `Content-Type` passes. Measured
-    2026-10-13 with `text/plain`, `application/xml` and `foo` on each of them, with no credential
-    and (on `POST content/archive`) with one."""
+    it will not read, or None: Tomcat's 400 page, or an empty 415 with no `content-type` where the
+    service checks the type (all but :data:`_CONFLUENCE_JAXRS_UNTYPED`), as
+    ``errors.atlassian.jaxrs_media_type_refusal`` decides."""
     if not _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
         return None
     status = errors_atlassian.jaxrs_media_type_refusal(
@@ -3023,9 +3126,10 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
     way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
     :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, the JAX-RS ones with no body), then refuses a caller
-    with no credential it resolves on every operation (:func:`_confluence_refusal`); the 401's
-    place was measured 2026-10-12 with an undecodable value and with one holding no colon, each
-    with a body of a type the operation does not take, and the `Accept` check's 2026-10-13.
+    with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
+    (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
+    and with one holding no colon, each with a body of a type the operation does not take, and the
+    `Accept` check's 2026-10-13.
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -3073,6 +3177,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                 produces=tuple(entry.get("produces", errors_atlassian.JSON_ONLY)),
             ),
         )
+    if operation in _JIRA_ROLE_WRITES:
+        _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
         operation in _JIRA_UNSERVED["refused"]
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
@@ -3509,8 +3615,7 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     layer = request.scope.get("atlassian_front_door")
     if layer is not None:
         # An answer given in front of the application never reaches what stamps the rest
-        # (``errors.atlassian.front_door``): the gateway's carries its own two ids and the edge's
-        # two, the CDN's 403s the edge's two, and its 405 and its 400 nothing.
+        # (``errors.atlassian.FrontDoor`` names what each layer adds).
         if layer == "gateway":
             return _gateway_headers(request)
         return dict(_EDGE) if layer == "cdn edge" else {}

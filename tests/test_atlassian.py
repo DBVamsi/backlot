@@ -259,7 +259,8 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     )
     assert r.status_code == 403
     # The whole body, not a subset: this one route answers with a single `error` key, where every
-    # other Atlassian error here carries message/statusCode/errorMessages. Byte for byte, spelled as
+    # other Jira error on a served route carries `errorMessages` and `errors`
+    # (``errors.atlassian._jira_envelope``). Byte for byte, spelled as
     # ``backlot.main.refuse_a_bearer_jira_cannot_read`` says real spells it.
     assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
@@ -277,13 +278,15 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     ):
         assert absent not in r.headers, absent
     # And it is refused ahead of the route: serverInfo needs no credential and still answers 403,
-    # which is why the check is not in the caller helper.
-    info = client.get(
-        "/atlassian/rest/api/3/serverInfo", headers={"Authorization": "Bearer usr-nope"}
-    )
-    assert info.status_code == 403 and info.json() == {
-        "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
-    }
+    # which is why the check is not in the caller helper. A tab, a comma or a dot in the token is
+    # read past, where a space is not (``backlot.auth.atlassian_bearer_token``).
+    for token in ("usr-nope", "a\tb", "a,b", "a.b"):
+        info = client.get(
+            "/atlassian/rest/api/3/serverInfo", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert info.status_code == 403 and info.json() == {
+            "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
+        }, token
 
 
 def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
@@ -1676,46 +1679,129 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
     assert "expand" not in declared
 
 
+# --- a project role's id: a `long` path variable, read before the project ---------------------
+
+_MISSING_ID = "Required path variable 'id' is not present."
+
+
+def _unconverted(role_id: str) -> str:
+    return f"Failed to convert 'id' with value: '{unquote(role_id)}'"
+
+
+@pytest.mark.parametrize(
+    "method,role_id,caller,body,status,answer",
+    [
+        # what a `long` path variable reads (``backlot.routers.atlassian._java_long``): the project
+        # lookup comes next, the 404 a caller who sees no project gets
+        *(
+            ("GET", role_id, "none", None, 404, None)
+            for role_id in (
+                "-1",
+                "+1",
+                "01",
+                "%201",
+                "1%20",
+                "%E2%80%83%201",
+                "0x1",
+                "0x01",
+                "-0x1",
+                "0X1",
+                "-%231",
+                "%D9%A3",
+                "%EF%BC%91",
+                "0x%EF%BC%91",
+                "0x%EF%BC%A1",
+                "9223372036854775807",
+                "-9223372036854775808",
+                "0x7fffffffffffffff",
+                "-0x8000000000000000",
+                "0" * 4400 + "1",
+            )
+        ),
+        # what it does not, the 400 naming the value
+        *(
+            ("GET", role_id, "none", None, 400, _unconverted(role_id))
+            for role_id in (
+                "abc",
+                "1.5",
+                "1.0",
+                "1e3",
+                "1_0",
+                "+",
+                "-",
+                "--1",
+                "+-1",
+                "+0x1",
+                "+%231",
+                "0x",
+                "0x-1",
+                "0x1g",
+                "00x1",
+                "%C2%A01",
+                "1%C2%A0",
+                "%F0%9D%9F%8F",
+                "99999999999999999999",
+                "9223372036854775808",
+                "-9223372036854775809",
+                "0x8000000000000000",
+            )
+        ),
+        # whitespace alone, which leaves the variable missing
+        ("GET", "%20", "none", None, 400, _MISSING_ID),
+        ("GET", "%E2%80%83", "none", None, 400, _MISSING_ID),
+        # a caller who sees the project gets the same 400, and the id as read
+        ("GET", "abc", "admin", None, 400, _unconverted("abc")),
+        ("GET", "-0x1", "admin", None, 200, -1),
+        ("GET", "1%E2%80%831", "admin", None, 200, 11),
+        # the writes read it behind their 415 and ahead of the project
+        ("DELETE", "abc", "none", None, 400, _unconverted("abc")),
+        ("DELETE", "%20", "none", None, 400, _MISSING_ID),
+        ("POST", "abc", "none", "{}", 400, _unconverted("abc")),
+        ("PUT", "abc", "none", "{}", 400, _unconverted("abc")),
+        ("POST", "abc", "admin", "{}", 400, _unconverted("abc")),
+        ("PUT", "abc", "none", None, 415, "Content-Type 'null' is not supported."),
+        ("DELETE", "-0x1", "none", None, 404, None),
+    ],
+)
+def test_jira_reads_a_role_id_as_a_long_before_the_project(
+    client, admin_h, method, role_id, caller, body, status, answer
+):
+    """Each row as ``backlot.routers.atlassian._role_id`` reads the id, which real answered the same
+    with and without a credential; the project is one the anonymous caller cannot see and the admin
+    can."""
+    key = synth.jira_project_key("payments")
+    headers = dict(admin_h) if caller == "admin" else {}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    r = client.request(
+        method, f"/atlassian/rest/api/3/project/{key}/role/{role_id}", headers=headers, content=body
+    )
+    assert r.status_code == status, r.text
+    if status in (400, 415):
+        assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+        assert r.json()["detail"] == answer
+        if "%" not in role_id:
+            assert r.json()["instance"] == f"/rest/api/3/project/{key}/role/{role_id}"
+    elif status == 200:
+        assert r.json()["id"] == answer
+    else:
+        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
+
+
+def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
+    """The route reads the id as text so that it can answer real's 400s itself; the schema keeps
+    the integer Jira's document declares."""
+    op = client.app.openapi()["paths"]["/atlassian/rest/api/3/project/{key}/role/{role_id}"]["get"]
+    (role_id,) = [p for p in op["parameters"] if p["name"] == "role_id"]
+    assert role_id["schema"]["type"] == "integer"
+
+
 # --- how a query parameter is READ: conversion, range, repetition -------------------------
 
 # Measured on brekkylab.atlassian.net, 2026-09-14. The two products refuse a type-conversion
 # failure in DIFFERENT envelopes, neither of them `errors.atlassian.http_body`'s: Jira answers RFC
 # 7807 on `application/problem+json`, Confluence its own two-key body carrying a raw Java
 # exception string on a bare `application/json`.
-
-
-@pytest.mark.parametrize(
-    "role_id,status",
-    [
-        # what a `long` path variable reads (``backlot.routers.atlassian._java_long``): the project
-        # lookup comes next, the 404 a caller who sees no project gets
-        ("-1", 404),
-        ("+1", 404),
-        ("%201", 404),
-        ("0x1", 404),
-        ("9223372036854775807", 404),
-        # and what it does not, the 400
-        ("abc", 400),
-        ("1.5", 400),
-        ("1e3", 400),
-        ("99999999999999999999", 400),
-    ],
-)
-def test_jira_reads_a_role_id_as_a_long_before_the_project(client, role_id, status):
-    key = synth.jira_project_key("payments")
-    r = client.get(f"/atlassian/rest/api/3/project/{key}/role/{role_id}")
-    assert r.status_code == status, r.text
-    if status == 400:
-        assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
-        assert r.json() == {
-            "type": "about:blank",
-            "title": "Bad Request",
-            "status": 400,
-            "detail": f"Failed to convert 'id' with value: '{unquote(role_id)}'",
-            "instance": f"/rest/api/3/project/{key}/role/{role_id}",
-        }
-    else:
-        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
 
 # the path a refusal echoes, as `_echoed_path` gives it
@@ -1828,11 +1914,127 @@ def test_jira_comma_joins_a_repeated_string_parameter_before_validating_it(paged
 
 
 @pytest.mark.parametrize("slash", ["", "/"])
-def test_jira_search_refuses_an_integer_parameter_it_cannot_convert(client, admin_h, slash):
-    r = client.get(f"/atlassian/rest/api/3/search/jql{slash}?maxResults=abc", headers=admin_h)
+@pytest.mark.parametrize(
+    "param,value", [("maxResults", "abc"), ("fieldsByKeys", "x"), ("reconcileIssues", "a")]
+)
+def test_jira_search_refuses_a_parameter_it_cannot_convert(client, admin_h, slash, param, value):
+    r = client.get(f"/atlassian/rest/api/3/search/jql{slash}?{param}={value}", headers=admin_h)
     assert r.status_code == 400, r.text
-    assert r.json()["detail"] == "Failed to convert 'maxResults' with value: 'abc'"
+    assert r.json()["detail"] == f"Failed to convert '{param}' with value: '{value}'"
     assert r.json()["instance"] == f"/rest/api/3/search/jql{slash}"
+
+
+_ANY_PROJECT = "jql=project%20is%20not%20EMPTY"
+_BOUNDED = f"{_ANY_PROJECT}&maxResults=1"
+
+
+@pytest.mark.parametrize(
+    "query,named",
+    [
+        # fieldsByKeys: the first value, Java's trim off it, matched in any case
+        (f"{_BOUNDED}&fieldsByKeys=true", None),
+        (f"{_BOUNDED}&fieldsByKeys=TRUE", None),
+        (f"{_BOUNDED}&fieldsByKeys=False", None),
+        (f"{_BOUNDED}&fieldsByKeys=yes", None),
+        (f"{_BOUNDED}&fieldsByKeys=ON", None),
+        (f"{_BOUNDED}&fieldsByKeys=no", None),
+        (f"{_BOUNDED}&fieldsByKeys=off", None),
+        (f"{_BOUNDED}&fieldsByKeys=1", None),
+        (f"{_BOUNDED}&fieldsByKeys=0", None),
+        (f"{_BOUNDED}&fieldsByKeys=", None),
+        (f"{_BOUNDED}&fieldsByKeys=%20true", None),
+        (f"{_BOUNDED}&fieldsByKeys=true%20", None),
+        (f"{_BOUNDED}&fieldsByKeys=%01true", None),
+        (f"{_BOUNDED}&fieldsByKeys=true%1F", None),
+        (f"{_BOUNDED}&fieldsByKeys=ye%C5%BF", None),
+        (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=x", None),
+        (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=%20", None),
+        (f"{_BOUNDED}&fieldsByKeys=x", ("fieldsByKeys", "x")),
+        (f"{_BOUNDED}&fieldsByKeys=null", ("fieldsByKeys", "null")),
+        (f"{_BOUNDED}&fieldsByKeys=2", ("fieldsByKeys", "2")),
+        (f"{_BOUNDED}&fieldsByKeys=y", ("fieldsByKeys", "y")),
+        (f"{_BOUNDED}&fieldsByKeys=n", ("fieldsByKeys", "n")),
+        (f"{_BOUNDED}&fieldsByKeys=%20", ("fieldsByKeys", " ")),
+        (f"{_BOUNDED}&fieldsByKeys=%01", ("fieldsByKeys", "\x01")),
+        (f"{_BOUNDED}&fieldsByKeys=tr%20ue", ("fieldsByKeys", "tr ue")),
+        (f"{_BOUNDED}&fieldsByKeys=%C2%A0true", ("fieldsByKeys", "\xa0true")),
+        (f"{_BOUNDED}&fieldsByKeys=%C2%85true", ("fieldsByKeys", "\x85true")),
+        (f"{_BOUNDED}&fieldsByKeys=%E2%80%80true", ("fieldsByKeys", "\u2000true")),
+        (f"{_BOUNDED}&fieldsByKeys=x&fieldsByKeys=yes", ("fieldsByKeys", None)),
+        (f"{_BOUNDED}&fieldsByKeys=&fieldsByKeys=yes", ("fieldsByKeys", None)),
+        # reconcileIssues: every value, the blank ones passed over
+        (f"{_BOUNDED}&reconcileIssues=1", None),
+        (f"{_BOUNDED}&reconcileIssues=-1", None),
+        (f"{_BOUNDED}&reconcileIssues=%2B1", None),
+        (f"{_BOUNDED}&reconcileIssues=%201", None),
+        (f"{_BOUNDED}&reconcileIssues=1%20", None),
+        (f"{_BOUNDED}&reconcileIssues=1%202", None),
+        (f"{_BOUNDED}&reconcileIssues=%D9%A1", None),
+        (f"{_BOUNDED}&reconcileIssues=9223372036854775807", None),
+        (f"{_BOUNDED}&reconcileIssues=-9223372036854775808", None),
+        (f"{_BOUNDED}&reconcileIssues=", None),
+        (f"{_BOUNDED}&reconcileIssues=%20", None),
+        (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=2", None),
+        (f"{_BOUNDED}&reconcileIssues=&reconcileIssues=1", None),
+        (f"{_BOUNDED}&reconcileIssues=%20&reconcileIssues=1", None),
+        (f"{_BOUNDED}&reconcileIssues=a", ("reconcileIssues", "a")),
+        (f"{_BOUNDED}&reconcileIssues=1.5", ("reconcileIssues", "1.5")),
+        (f"{_BOUNDED}&reconcileIssues=1%2C2", ("reconcileIssues", "1,2")),
+        (f"{_BOUNDED}&reconcileIssues=1_0", ("reconcileIssues", "1_0")),
+        (f"{_BOUNDED}&reconcileIssues=%C2%A01", ("reconcileIssues", "\xa01")),
+        (f"{_BOUNDED}&reconcileIssues=%011", ("reconcileIssues", "\x011")),
+        (
+            f"{_BOUNDED}&reconcileIssues=9223372036854775808",
+            ("reconcileIssues", "9223372036854775808"),
+        ),
+        (
+            f"{_BOUNDED}&reconcileIssues=-9223372036854775809",
+            ("reconcileIssues", "-9223372036854775809"),
+        ),
+        (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=a", ("reconcileIssues", None)),
+        (f"{_BOUNDED}&reconcileIssues=a&reconcileIssues=1", ("reconcileIssues", None)),
+        (
+            f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=9223372036854775808",
+            ("reconcileIssues", None),
+        ),
+        # two refusals at once: the one real names
+        (f"{_ANY_PROJECT}&maxResults=abc&fieldsByKeys=x", ("maxResults", "abc")),
+        (f"{_ANY_PROJECT}&fieldsByKeys=x&maxResults=abc", ("maxResults", "abc")),
+        (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=abc", ("maxResults", "abc")),
+        (f"{_BOUNDED}&reconcileIssues=a&fieldsByKeys=x", ("fieldsByKeys", "x")),
+        (f"{_ANY_PROJECT}&fieldsByKeys=x&nextPageToken=bogus", ("fieldsByKeys", "x")),
+        (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=0", ("reconcileIssues", "a")),
+    ],
+)
+def test_jira_search_get_converts_fields_by_keys_and_reconcile_issues(
+    client, admin_h, query, named
+):
+    """Real's answers to the GET form, for the rules `_bool_param` and `_jira_long_list_param`
+    describe: ``named`` is the parameter a 400 names and the value it names as sent, or ``None``
+    where the parameter repeats and the 400 names the array (see
+    `test_jira_reports_the_whole_array_when_the_first_repeated_value_will_not_convert`). A row
+    without one is served."""
+    r = client.get(f"/atlassian/rest/api/3/search/jql?{query}", headers=admin_h)
+    if named is None:
+        assert r.status_code == 200, r.text
+        return
+    param, shown = named
+    assert r.status_code == 400, r.text
+    assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    body = r.json()
+    detail = body.pop("detail")
+    if shown is None:
+        assert re.fullmatch(
+            rf"Failed to convert '{param}' with value: '\[Ljava\.lang\.String;@[0-9a-f]+'", detail
+        ), detail
+    else:
+        assert detail == f"Failed to convert '{param}' with value: '{shown}'"
+    assert body == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "instance": "/rest/api/3/search/jql",
+    }
 
 
 @pytest.mark.parametrize("param", ["limit", "start"])
@@ -3979,6 +4181,7 @@ _UI = "/atlassian/rest/api/3/uiModifications/1"
 _REMOVE_TEMPLATE = "/atlassian/rest/api/3/project-template/remove-template"
 _SERVICE_REGISTRY = "/atlassian/rest/atlassian-connect/1/service-registry?serviceIds=1"
 _COLUMNS = "/atlassian/rest/api/2/settings/columns"
+_FILTER_COLUMNS = "/atlassian/rest/api/3/filter/999/columns"
 _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 #: a `Content-Type` Spring cannot read, which the 415 names no type for
 _UNREAD = object()
@@ -4062,6 +4265,15 @@ _JSON = "application/json"
             "application/json, text/plain",
         ),
         ("PUT", _PREFERENCES, "none", "text/plain", "x", 401, None, None),
+        # one whose 415 adds a charset the request did not send, and keeps one it did
+        # (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
+        ("PUT", _FILTER_COLUMNS, "none", "text/plain", "x", 415)
+        + ("text/plain;charset=UTF-8", "application/json, application/yaml, application/*+json"),
+        ("PUT", _FILTER_COLUMNS, "none", "text/plain;charset=ISO-8859-1", "x", 415)
+        + (
+            "text/plain;charset=ISO-8859-1",
+            "application/json, application/yaml, application/*+json",
+        ),
     ],
 )
 def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
@@ -4824,7 +5036,8 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
 
 #: The pages the layers in front of both products sent on 2026-10-12, each as its length in bytes
 #: and the SHA-256 of its text with the `Request ID:` line read as `Request ID: <id>`: the one line
-#: two of CloudFront's answers differ by, a value seeded from the path here and random on real.
+#: two of CloudFront's answers differ by, a value seeded from the method and path here and random
+#: on real.
 _CLOUDFRONT_405 = (915, "367a52dd1b2cf9f4508bbc97dd06390705cba5cf43446e0b57bae8e36aeabd2c")
 _CLOUDFRONT_METHOD_403 = (1053, "5dd68faa0cbf2eb7f73764c74991458af12c48974ee1abbe35e55303c9e76207")
 _CLOUDFRONT_400 = (915, "73a1d9f5d62fcebdc292a776e609c11154344817ddfa6d4d1fa2b753bdc6f8b6")
@@ -4840,13 +5053,21 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
     "method,vendor_path,status,page,media_type",
     [
         # the CDN: `TRACE` is its 405, a method spelled as the 403's rule spells one its 403, any
-        # other its 400, and a `%00` its 400 ahead of the method
+        # other its 400, and a `%00` or a broken escape its 400 ahead of the method and the firewall
         ("TRACE", "/rest/api/3/serverInfo", 405, _CLOUDFRONT_405, _EDGE_PAGE),
         ("PROPFIND", "/rest/api/3/serverInfo", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
         ("MKACTIVITY", "/rest/api/3/serverInfo", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("TRACE", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("PATCH", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo%2", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/wiki/rest/api/space/%", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%%41", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope%u005c", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("TRACE", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("PROPFIND", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope<script>%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         # its firewall (`errors.atlassian.waf_blocks`): a tag, and a step up a directory
         ("GET", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
@@ -4863,9 +5084,13 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/rest/api/3/nope..%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope/..;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/rest/api/3/nope/..%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;;;;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/nope/..;%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/rest/api/3/serverInfo?x=..%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/rest/api/3/serverInfo?x=..%5C", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/rest/api/3/serverInfo?x=..%5C&y=1", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+        ("GET", "/rest/api/3/serverInfo?x=..%5C%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         # the method's refusal before the firewall's, the firewall's before the gateway's `PATCH`
         ("PROPFIND", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
         ("PATCH", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
@@ -4888,9 +5113,13 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
         # what none of them refuses reaches the product: a tag the firewall does not name, a
-        # closing tag but `script`'s, a name short of `!doctype`, a tag or a `..\` mid-value in the
-        # query, Jira's decoded slash and the web app's `spaces/`
+        # closing tag but `script`'s, a name short of `!doctype`, a `..;` inside a segment or with
+        # no `/` after it, a tag in the query, a `..\` there that neither a `\` nor a `/` nor the
+        # end of the value follows, a step in a parameter's name, a broken escape in the query,
+        # Jira's decoded slash and the web app's `spaces/` in any case
         ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nopeA..;/x", 404, None, errors_atlassian.PROBLEM_JSON),
+        ("GET", "/rest/api/3/nope/..;a/x", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
         ("GET", "/rest/api/3/nope<!ELEMENT>", 404, None, errors_atlassian.PROBLEM_JSON),
@@ -4909,9 +5138,19 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
             errors_atlassian.JIRA_JSON_MEDIA_TYPE,
         ),
         ("GET", "/rest/api/3/serverInfo?x=..%3B", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+        (
+            "GET",
+            "/rest/api/3/serverInfo?x=..%5C.",
+            200,
+            None,
+            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+        ),
+        ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+        ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
         ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
         # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
         ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+        ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
     ],
 )
 def test_atlassian_front_door_answers_before_either_product(
@@ -4969,7 +5208,7 @@ def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
     """The same path's `GET` is served (the `test_admin_*` crawls exercise it); the write differs
     only by method and reaches the operation real reaches (``_JIRA_ISSUE_WRITES``,
     ``_JIRA_ROLE_WRITES`` and ``_jira_operation`` in ``backlot.routers.atlassian`` carry the
-    measurement). A method no operation is published for stays the 405
+    measurement). A method no operation is published for is the 405
     ``errors.atlassian.method_not_allowed`` answers, which
     `test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes` pins. No
     credential."""
@@ -5047,6 +5286,45 @@ _JSON_TYPE = "application/json"
         ("POST", "/wiki/rest/api/template", None, "application/xml", 415, b""),
         ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
         + (errors_atlassian.tomcat_page(400).encode(),),
+        # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
+        # up, and a parameter with no `=`, an empty value or space beside the `=` is unreadable
+        ("POST", "/wiki/rest/api/template", None, "*/*", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/*", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "*/json", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset=nope", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, 'application/json; ;x="a;b"', 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("POST", "/wiki/rest/api/template", None, "text/*", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset =utf-8", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;charset= utf-8", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("DELETE", "/wiki/rest/api/user/watch/space/NOPESUCHZZ", None, "", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a', 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json/x", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "a/b c", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x?y", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
+        # which real runs and Backlot does not serve
+        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
         + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
         ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
@@ -5062,8 +5340,7 @@ def test_confluence_answers_a_published_write_before_it_runs(
     ``_published_answer``, ``_CONFLUENCE_CONSUMES`` and ``_CONFLUENCE_JAXRS_WRITES`` in
     ``backlot.routers.atlassian`` carry the measurement for. A 415's ``body`` is the reason Spring
     gives; the 401 is asserted by status alone, its body being JSON here where real's is Tomcat's
-    page. The control for the routing is the same paths' served `GET`, crawled by
-    `test_admin_confluence_crawls_all`."""
+    page."""
     headers = {} if ctype is None else {"Content-Type": ctype}
     if authorization is not None:
         headers["Authorization"] = authorization
@@ -5089,19 +5366,6 @@ def test_confluence_answers_a_published_write_before_it_runs(
         )
 
 
-# --- a bearer whose token holds a tab, a comma or a dot is read, then refused ------------------
-
-
-@pytest.mark.parametrize("token", ["a\tb", "a,b", "a.b"])
-def test_jira_reads_a_bearer_whose_token_holds_a_tab_a_comma_or_a_dot(client, token):
-    """The gateway reads past these and refuses what it read as a Connect token, where a space in
-    the token is not read at all (`test_jira_reads_an_unrecognised_scheme_as_no_credential`;
-    ``backlot.auth.atlassian_bearer_token`` carries the measurement)."""
-    r = client.get("/atlassian/rest/api/3/serverInfo", headers={"Authorization": f"Bearer {token}"})
-    assert r.status_code == 403
-    assert r.json() == {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE}
-
-
 # --- the generator sorts run operations and names the measured media-type exceptions ----------
 
 
@@ -5124,25 +5388,6 @@ def test_jira_unserved_run_entries_carry_their_consumes():
         "application/json",
         "text/plain",
     ]
-
-
-def test_jira_columns_415_names_a_charset_the_request_did_not_send(client):
-    """`filter/{}/columns` adds `;charset=UTF-8` to the type its 415 names where the request sent
-    none and keeps one the request carried (`DOCUMENTED_OTHERWISE` in
-    ``scripts/gen_jira_unserved.py`` carries the measurement)."""
-    added = client.put(
-        "/atlassian/rest/api/3/filter/999/columns",
-        content=b"x",
-        headers={"Content-Type": "text/plain"},
-    )
-    assert added.status_code == 415
-    assert added.json()["detail"] == "Content-Type 'text/plain;charset=UTF-8' is not supported."
-    kept = client.put(
-        "/atlassian/rest/api/3/filter/999/columns",
-        content=b"x",
-        headers={"Content-Type": "text/plain;charset=ISO-8859-1"},
-    )
-    assert kept.json()["detail"] == "Content-Type 'text/plain;charset=ISO-8859-1' is not supported."
 
 
 # --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------
