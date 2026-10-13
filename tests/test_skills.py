@@ -41,7 +41,9 @@ def _gen_docs():
     the generator by construction, which reads as a second opinion and is not one — it would pass
     on exactly the headings the generator gets wrong.
     """
-    spec = importlib.util.spec_from_file_location("gen_docs", REPO / "scripts" / "gen_docs.py")
+    spec = importlib.util.spec_from_file_location(
+        "scripts.gen_docs", REPO / "scripts" / "gen_docs.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
