@@ -18,8 +18,9 @@ envelope is NOT uniform — three families differ in which optional members they
 
 A request that carries no credential is refused by operation rather than by family: the 403 of an
 unregistered caller on the operations that also take an API key, the 401 of a missing credential on
-the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key
-(:func:`missing_api_key`). One whose credential does not resolve is the 401 of
+the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key when no
+`Authorization` is sent (:func:`missing_api_key`), or :func:`download_credential_refused`'s 401 when
+one is sent that is no credential. One whose credential does not resolve is the 401 of
 :func:`bad_token` in every family, which is why a missing credential and a bad token are separate
 constructors here rather than one "unauthorized". What counts as a credential is
 ``routers.google._credential``'s to say.
@@ -550,8 +551,9 @@ def no_credentials(path: str, method: str) -> GoogleError:
     ones in `_UNREGISTERED_CALLER_OPERATIONS`, :func:`missing_credentials` on the rest, Gmail, Docs
     and Slides whole among them.
 
-    A byte-stream read with no credential is a third answer, :func:`missing_api_key`, which the
-    route asks for by name.
+    A byte-stream read with no credential has two answers of its own, :func:`missing_api_key` with
+    no `Authorization` and :func:`download_credential_refused` with one that is no credential, which
+    the route asks for by name.
     """
     if any(m == method and p.fullmatch(path) for m, p in _UNREGISTERED_CALLER_OPERATIONS):
         return unregistered_caller()
@@ -629,10 +631,10 @@ def download_credential_refused() -> GoogleError:
 
 
 def missing_api_key() -> GoogleError:
-    """No credential on a byte-stream read. Measured 2026-10-04 on `files.export` and 2026-10-05 on
-    `files.get?alt=media`, on an existing file and on a missing id alike: 403 with this sentence and
-    `reason: forbidden`, and NO ``status`` -- where the same route without the download answers
-    :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
+    """No `Authorization` on a byte-stream read. Measured 2026-10-04 on `files.export` and
+    2026-10-05 on `files.get?alt=media`, on an existing file and on a missing id alike: 403 with
+    this sentence and `reason: forbidden`, and NO ``status`` -- where the same route without the
+    download answers :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
 
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream

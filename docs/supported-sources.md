@@ -198,10 +198,9 @@ own address: another address is the 403 `Delegation denied for <the caller's own
 `userId` without text on both sides of an `@` the 403
 `Invalid user id specified in request/Delegation denied`, as on real, which also answers the second
 to some shapes with text on both sides (`a@b`, `a@b@c`;
-`backlot.routers.google._refuse_another_mailbox` lists those measured). Both come after a
-`maxResults` that is not a uint32 and ahead of the message id, a `maxResults` of 0 and the
-`pageToken`; the admin token reads any mailbox. Measured against the live Gmail API on 2026-10-11
-and 2026-10-12.
+`backlot.routers.google._refuse_another_mailbox` lists those measured, and the refusals that come
+before both and after them). The admin token reads any mailbox. Measured against the live Gmail API
+on 2026-10-11 and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -366,16 +365,18 @@ writes it: every value it cannot convert and every name the request message lack
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
 **A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
-tab or a comma ends: `Bearer <t> x` and `Bearer <t>,x` are served, `Bearer<t>` is a bad token, and
-`bearer <t>`, `token <t>`, `Basic …` and a bare `Bearer` are no credential at all. With none, a
-request is answered by its operation rather than its family: an unregistered caller's 403 on an
-operation that takes API keys too (Drive's file and comment reads among them, and the three Sheets
-reads), a missing credential's 401 on the rest, and the missing API key's 403 on a download. Each of
-those 401s carries `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with
-`error="invalid_token"` for a token that does not resolve. An operation the two Google baselines
-acknowledge as `missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a
-caller whose credential resolves gets the 404 or 405 its path gets. Measured against the live Drive,
-Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
+tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
+`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
+a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
+than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
+and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
+and on a download the missing API key's 403 with no `Authorization` header, the download server's
+401 with one that is no credential. Each of those 401s carries
+`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
+token that does not resolve. An operation the two Google baselines acknowledge as
+`missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a caller whose
+credential resolves gets the 404 or 405 its path gets. Measured against the live Drive, Gmail,
+Sheets, Docs and Slides APIs on 2026-10-11.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
