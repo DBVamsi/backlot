@@ -37,11 +37,12 @@ A module in ``_ENVELOPES`` provides:
   vendor whose error bodies are measured to the byte or whose status the body does not decide.
   Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`
   on a GET turns one into a 200 JSONP script. Atlassian has one for the refusals whose bytes the
-  request's `Accept` decides (:func:`backlot.errors.atlassian.rendered`), and answers ``None`` for
-  the rest. The whole REQUEST, because those renderings read the method, the query and the headers.
-  A vendor without it gets FastAPI's ``JSONResponse`` around the dict, which is what GitHub keeps —
-  its JSONP is a different envelope under a different media type, so it does not want Google's
-  renderer; Atlassian ignores `callback` on every route asked.
+  request's `Accept` decides and for those whose body is bytes already, `search`'s empty 405 among
+  them (:func:`backlot.errors.atlassian.rendered`), and answers ``None`` for the rest. The whole
+  REQUEST, because those renderings read the method, the query and the headers. A vendor without it
+  gets FastAPI's ``JSONResponse`` around the dict, which is what GitHub keeps — its JSONP is a
+  different envelope under a different media type, so it does not want Google's renderer; Atlassian
+  ignores `callback` on every route asked.
 
 A media type that varies by REFUSAL rather than by path and status cannot come from
 ``json_media_type``, which sees only those two. It rides on the exception instead, as a

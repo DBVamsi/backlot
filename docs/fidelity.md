@@ -311,11 +311,10 @@ it is `backlot.errors.atlassian.head_content_length`'s to say, and `tests/test_a
 record.
 
 An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
-and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,
-an `Accept` naming neither with a 403 page, and `search` by `Accept` its own way. No document here
-declares any of it — real's own description has no `options` operation and neither does Backlot's —
-so the two `Allow` tables in `backlot.errors.atlassian` and the tests beside them are what hold
-them.
+and Confluence answers a 404 or a 403 page by `Accept` on every route but `search`, which answers
+its own way (`backlot.errors.atlassian.confluence_options`). No document here declares any of it —
+real's own description has no `options` operation and neither does Backlot's — so the two `Allow`
+tables in `backlot.errors.atlassian` and the tests beside them are what hold them.
 
 What `Accept` does is a fourth. Both products refuse one that admits none of the types a route
 answers in with a 406 ahead of most of their other refusals, and send several refusals in the shape

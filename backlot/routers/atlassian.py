@@ -48,12 +48,12 @@ async def _checked_before_the_route(request: Request) -> None:
 
     Confluence answers a Basic value it cannot read with its 401 (:func:`_confluence_caller`), and
     then an `Accept` that admits no JSON with its 406 (``errors.atlassian.not_acceptable``), the
-    empty one JAX-RS gives on `search` and Tomcat's page on the others, ahead of the anonymous 403,
-    a parameter's 400 and the route's own 404. Jira answers a `POST search/jql` body of a type it
-    does not read with its 415 (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an
-    empty body's 400, an unbounded query's 400, a parameter's 400 and the route's own answer.
-    `space/{key}/permission` is the one route this asks the 401 alone of: the 405 it answers comes
-    before the 406.
+    empty one JAX-RS gives on `search` and on the others Tomcat's page or, under a `+json` type
+    `Accept` names, the `errors` list, ahead of the anonymous 403, a parameter's 400 and the route's
+    own 404. Jira answers a `POST search/jql` body of a type it does not read with its 415
+    (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an empty body's 400, an
+    unbounded query's 400, a parameter's 400 and the route's own answer. `space/{key}/permission` is
+    the one route this asks the 401 alone of: the 405 it answers comes before the 406.
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
     jaxrs = False
@@ -1645,7 +1645,8 @@ async def confluence_space_permission(key: str, request: Request):
     does not make.
 
     A `POST` here is the published write, which ``_published_answer`` answers as real does before
-    it runs (its 415, then the caller's refusal, :data:`_CONFLUENCE_CONSUMES`).
+    it runs (its 415, then the 406 for an `Accept` admitting no JSON, then the caller's refusal,
+    :data:`_CONFLUENCE_CONSUMES`).
 
     ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
     on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a
@@ -2375,9 +2376,7 @@ def _refuse_a_search_media_type(request: Request) -> None:
     body sent without the header is the same 415 as one sent with `text/plain`, so the header
     decides before the bytes are looked at. The match is on the media type alone, case-insensitively
     and ignoring parameters — `APPLICATION/JSON` and `application/json; charset=utf-8` are both
-    read, `*/*` and `application/xml` are not. It comes before the 406 for an `Accept` that admits
-    no JSON (2026-10-13), which is why :func:`_checked_before_the_route` asks it, ahead of
-    :func:`_jira_search_body`.
+    read, `*/*` and `application/xml` are not. :func:`_checked_before_the_route` has its place.
     """
     content_type = request.headers.get("content-type")
     if (content_type or "").split(";")[0].strip().lower() != "application/json":
@@ -3125,8 +3124,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
     type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
     way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
-    :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, the JAX-RS ones with no body), then refuses a caller
-    with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
+    :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, and with no body on the JAX-RS ones), then refuses a
+    caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
     and with one holding no colon, each with a body of a type the operation does not take, and the
     `Accept` check's 2026-10-13.
@@ -3209,9 +3208,8 @@ def _echoed_path(request: Request) -> str:
 
 
 def _wants_json(request: Request) -> bool:
-    """Whether the caller asked for JSON by name, in any case, which is what picks Confluence's 404
-    shape."""
-    return "application/json" in (request.headers.get("accept") or "").lower()
+    """Whether Confluence's JAX-RS 404 is JSON (``errors.atlassian.jaxrs_picks_json``)."""
+    return errors_atlassian.jaxrs_picks_json(request.headers.get("accept"))
 
 
 def _confluence_serves_html(vendor_path: str) -> bool:
@@ -3257,10 +3255,10 @@ def _options_answer(request: Request) -> Response:
     on an issue, `POST` on `field` — which Backlot serves none of: the header describes the
     endpoint a client is asking about, so it is copied rather than derived from what this server
     happens to implement (`errors.atlassian.jira_options_allow`). Confluence answers 404 in the
-    `errors` list its 405 uses, on every route measured but `search` (:func:`_search_options`),
-    where `Accept` admits JSON, and what the other values draw is
-    ``errors.atlassian.confluence_options``. Measured on Atlassian Cloud over every route here,
-    `child/attachment` on 2026-10-10 and the others on 2026-09-22.
+    `errors` list its 405 uses, by `Accept` (``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND``,
+    ``errors.atlassian.confluence_options``), but on `search` (:func:`_search_options`). Measured on
+    Atlassian Cloud over every route here, `child/attachment` on 2026-10-10 and the others on
+    2026-09-22.
 
     Jira's 200 is for a caller whose credential resolves. Anyone else — no credential, the Basic
     pair it rejects, an unknown scheme, and here an unreadable bearer too, which a `GET` draws the

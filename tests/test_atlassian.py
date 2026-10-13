@@ -4344,6 +4344,23 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
         ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
         # the name is read whatever its case
         ("/atlassian/wiki/rest/api/nopesuchroute", "APPLICATION/JSON", "json", "nopesuchroute"),
+        # by `q`, `q=0` among them, then the more specific, then the first listed, XML before JSON
+        *(
+            ("/atlassian/wiki/rest/api/nopesuchroute", accept, shape, "nopesuchroute")
+            for accept, shape in (
+                ("application/json;q=0", "json"),
+                ("application/xml;q=0, application/json", "json"),
+                ("application/json;q=0.5, application/xml", "xml"),
+                ("application/xml, application/json", "xml"),
+                ("APPLICATION/XML, application/json", "xml"),
+                ("application/*, application/json", "json"),
+                ("application/*", "xml"),
+                ("text/xml, application/json", "json"),
+                ("foo, application/json", "json"),
+                ("application/jsonx", "xml"),
+                ("application/json-patch+json", "xml"),
+            )
+        ),
     ],
 )
 def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
@@ -5369,10 +5386,11 @@ def test_confluence_answers_a_published_write_before_it_runs(
 # --- the generator sorts run operations and names the measured media-type exceptions ----------
 
 
-def test_jira_unserved_run_entries_carry_their_consumes():
+def test_jira_unserved_entries_carry_their_media_types():
     """``backlot/data/jira_unserved.json`` lists the media types a run operation checks, the same as
     a refused one, so the catch-all answers its 415 for a body it will not take: `run` maps each
-    operation to an entry, as `refused` does."""
+    operation to an entry, as `refused` does. An entry also says where `Accept` is not checked and
+    what a 406 names beyond JSON (``accept`` and ``produces``)."""
     import backlot
 
     table = json.loads(
@@ -5456,6 +5474,12 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "application/json;q=0, text/html", None, 200, _JIRA_JSON, None, {}),
     ("GET", _INFO, "none", _BROWSER, None, 200, _JIRA_JSON, None, {}),
     ("GET", _INFO, "none", _UNREAD_BESIDE_JSON, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", 'application/json;q="0.5"', None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0.5f", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0.5;q=2", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=u8", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;charset=undefined", None, 406, _EMPTY_HTML, b"", {}),
+    ("GET", _INFO, "none", "application/json;Charset=bogus", None, 406, _EMPTY_HTML, b"", {}),
     # `foo` and `*.*`: the 406 with no body and its `Accept` kept
     (
         "GET",
@@ -5538,6 +5562,24 @@ _ACCEPT_ROWS = [
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
     + ({"deprecation": None},),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 200, _JSON, None, {})
+        for accept in (
+            'application/json;q="0.5"',
+            "application/json;q=2;q=0.5",
+            "application/json;Charset=bogus",
+            "application/json;charset=UTF-8;Charset=bogus",
+        )
+    ),
+    *(
+        ("GET", _SPACES, "admin", accept, None, 406, None, b"", {})
+        for accept in (
+            "application/json;q=0.5;q=2",
+            "application/json;charset=bogus;Charset=UTF-8",
+            "application/json;charset=u8",
+            "application/json;charset=undefined",
+        )
+    ),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _JSON, None, 404, _JSON, None)
     + ({"deprecation": _PRESENT},),
     ("HEAD", _SPACES, "none", _HTML, None, 406, _TOMCAT, b"", {"content-length": "441"}),
@@ -5651,9 +5693,7 @@ _ACCEPT_ROWS = [
     ),
     ("GET", "/atlassian/wiki/rest/api/content/{content}", "admin", _JSON, None, 200, _JSON, None)
     + ({},),
-    # -- Confluence's JAX-RS services read it their own way (``errors.atlassian._jaxrs_accept``):
-    # `*/json` admits JSON and `application/*+json` does not, a member with no `/` and a charset
-    # are passed over, and a header they cannot parse is a 400 in the 406's place
+    # -- Confluence's JAX-RS services read it their own way (``errors.atlassian._jaxrs_accept``)
     ("GET", _CQL, "admin", "application/*+json", None, 406, None, b"", {}),
     ("GET", _CQL, "admin", "*/json", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "*/*+json", None, 403, _JSON, None, {}),
@@ -5686,6 +5726,30 @@ _ACCEPT_ROWS = [
     + ({"cache-control": None},),
     ("GET", _CQL, "admin", "application/json;q=2", None, 400, "text/plain")
     + (_unparsed("application/json;q=2"), {}),
+    *(
+        ("GET", _CQL, "admin", accept, None, 400, "text/plain", _unparsed(accept), {})
+        for accept in (
+            "application/json;foo",
+            "application/json;q= 0.5",
+            "application/json;q=0.5;q=2",
+            "application/json;Q=2",
+            "application/json;q=1.0000",
+            "application/json;q=1.5",
+            "application/json;q=1.01",
+            "application/json;q=0.5f",
+            "foo;x, application/json",
+        )
+    ),
+    *(
+        ("GET", _CQL, "admin", accept, None, 200, _JSON, None, {})
+        for accept in (
+            'application/json;q="0.5"',
+            "application/json;q=2;q=0.5",
+            "application/json; q=0.5",
+        )
+    ),
+    ("DELETE", "/atlassian/wiki/rest/api/template/1", "none", '"0.5"', None, 400, "text/plain")
+    + (_unparsed('"0.5"'), {}),
     ("HEAD", _CQL, "none", _HTML, None, 406, None, b"", {"content-length": None}),
     (
         "GET",
@@ -5739,6 +5803,8 @@ _ACCEPT_ROWS = [
     + ("problem, text/plain", {"accept": "application/json, text/plain"}),
     ("DELETE", "/atlassian/rest/api/3/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
     + ({"accept": _COLUMNS_PRODUCE},),
+    ("DELETE", "/atlassian/rest/api/2/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
+    + ({"accept": _COLUMNS_PRODUCE},),
 ]
 
 _ACCEPT_CREDENTIALS = {
@@ -5783,6 +5849,7 @@ def _accept_body(shape, status: int, vendor_path: str) -> bytes:
 #: status, content-type, the body as ``_LINE``, ``_UTF16_LINE`` or none, headers beside the realm).
 _LINE = errors_atlassian.JIRA_UNAUTHENTICATED.encode()
 _UTF16_LINE = b"\xfe\xff" + errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-16-be")
+_UTF32_LINE = errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-32-be")
 _UNREAD_ALLOW = {"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"}
 _JIRA_401 = [
     ("OPTIONS", None, 401, "text/plain;charset=UTF-8", _LINE, {"x-frame-options": None}),
@@ -5824,6 +5891,31 @@ _JIRA_401 = [
     ("OPTIONS", "text/plain;charset=utf-16", 401, "text/plain;charset=utf-16", _UTF16_LINE, {}),
     ("OPTIONS", "application/json;charset=utf16", 401, "application/json;charset=utf16")
     + (_UTF16_LINE, {}),
+    ("OPTIONS", "application/json;charset=utf-32", 401, "application/json;charset=utf-32")
+    + (_UTF32_LINE, {}),
+    ("OPTIONS", "application/json;charset=x-MacRoman", 401)
+    + ("application/json;charset=x-MacRoman", _LINE, {}),
+    ("OPTIONS", "application/*+json;charset=utf-16", 401, "application/json;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "application/*+json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "application/json;level=1", 401, "application/json;level=1;charset=UTF-8", _LINE)
+    + ({},),
+    ("OPTIONS", "text/plain;x=y", 401, "text/plain;x=y;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", 'application/json;q="0.5"', 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json;q=2;q=0.5", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/htm, application/json", 401, "text/htm;charset=UTF-8", _LINE, {}),
+    # `text/html` first found past the header's start is the page's type, ahead of the `q` order
+    ("OPTIONS", "application/json, text/html", 401, "text/html;charset=UTF-8", _LINE)
+    + ({"x-frame-options": "SAMEORIGIN"},),
+    ("OPTIONS", "application/json, text/html;charset=utf-16", 401, "text/html;charset=UTF-8")
+    + (_LINE, {}),
+    ("OPTIONS", "image/*, text/html", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "text/html;q=0.1, application/json, text/html", 401)
+    + ("application/json;charset=UTF-8", _LINE, {"x-frame-options": None}),
+    ("OPTIONS", "application/json,TEXT/HTML", 401, "application/json;charset=UTF-8", _LINE, {}),
+    ("OPTIONS", "application/json, foo, text/html", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     (
         "OPTIONS",
         "image/*",
@@ -5845,9 +5937,12 @@ _JIRA_401 = [
     ("OPTIONS", "application/json;charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=base64", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=rot13", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;charset=u8", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;Charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     # a GET whose `Accept` admits JSON passes the 406 and reaches the same choice
     ("GET", "text/plain, application/json", 401, "text/plain;charset=UTF-8", _LINE, {}),
     ("GET", "application/json, */*;q=0.1", 401, "text/html;charset=UTF-8", _LINE, {}),
+    ("GET", "application/json, text/html", 401, "text/html;charset=UTF-8", _LINE, {}),
 ]
 #: The gateway's Connect-token 403 under each `Accept` (``errors.atlassian.connect_token_answer``),
 #: the headers and the route-independence being
@@ -5907,9 +6002,7 @@ def test_atlassian_answers_an_accept_where_and_as_real_does(
     refusals that come before it and after it
     (``backlot.routers.atlassian._checked_before_the_route`` and
     ``backlot.routers.atlassian._published_answer``), and the shape a refusal takes from
-    `Accept` (``errors.atlassian.rendered``, ``errors.atlassian.confluence_refusal``). A refusal's
-    row sits beside the same URL's answer to an `Accept` that passes, which is what shows the
-    order."""
+    `Accept` (``errors.atlassian.rendered``, ``errors.atlassian.confluence_refusal``)."""
     path = path.format(**keys)
     request = client.build_request(
         method,

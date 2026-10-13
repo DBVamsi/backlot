@@ -35,7 +35,7 @@ credential, which sent each of its 232 DELETEs, PUTs and POSTs once with no body
 
 An entry's ``accept`` is ``"unchecked"`` where the operation answers an `Accept` admitting no JSON
 with no 406, and its ``produces`` names what its 406 names where that is more than JSON
-(``backlot.errors.atlassian.not_acceptable`` reads both); the names below say which.
+(``backlot.routers.atlassian._published_answer`` reads both); the names below say which.
 """
 
 from __future__ import annotations

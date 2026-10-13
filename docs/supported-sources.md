@@ -60,13 +60,15 @@ the 405 uses where `Accept` admits JSON, under a `+json` type it names instead, 
 page where it names neither, except on `search`, which answers by `Accept` as JAX-RS does: its WADL
 for `*/*`, `application/xml` or no `Accept` at all, and 204 for `application/json` or `text/html`,
 naming its three methods either way. An `Accept` that admits no JSON is a 406, ahead of the
-anonymous 403 and of every route's own answer but `space/{key}/permission`'s 405: Tomcat's page, or
+anonymous 403 and of every route's own answer but `space/{key}/permission`'s 405 and
+`space/{key}/label`'s 403, which takes the 406's place in `Accept`'s shape: Tomcat's page, or
 the `errors` list under a `+json` type the header names, and no body at all on `search` and the
 other JAX-RS services; a 405 and a 415 take the same shapes, the page naming the methods or the
 types the route takes. Where any member of `Accept` cannot be read the 406 has no body, and the
-JAX-RS services, which pass such a member over, answer a header they cannot parse with a 400 in its
-place. A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json`
-by name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or
+JAX-RS services, which pass a member with no `/` over, answer a header they cannot parse with a 400
+in its place. A path no route serves is JAX-RS's own 404 — JSON where `application/json` is the
+first type `Accept` names that JSON or XML matches, ordered by `q` and then by how specific each is,
+the `<status>` XML document otherwise — and a path below `space/` or `content/`, or
 anything under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with
 no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence
 publishes that no route here serves answers a `Content-Type` it does not take with its 415 (or, from
