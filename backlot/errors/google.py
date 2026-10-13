@@ -1175,10 +1175,13 @@ def head_refusal() -> Response:
     2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
     other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
     on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; that member's
-    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths; and
-    another Workspace member's token, with the `drive` and `gmail.readonly` scopes, got the 404 on
-    each Sheets path it was sent to. What picks the page was not found, so every caller gets the 400
-    here."""
+    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths, and
+    that member's gcloud token got the 400 on 18 of 18 across six other spreadsheets the member can
+    open. Nor does Sheets go by whether the caller is a domain administrator: that member is not
+    one, like every caller modelled here, and another Workspace member who is not one either got the
+    404 on each made-up Sheets path it tried, with `drive`, `gmail.readonly` or both, but the 400 on
+    a spreadsheet that exists, while that domain's administrator got the 400 on both through the
+    same OAuth client. What picks the page was not found, so every caller gets the 400 here."""
     return Response(status_code=400, media_type="text/html")
 
 
