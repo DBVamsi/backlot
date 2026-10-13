@@ -518,7 +518,7 @@ class Principals:
 
     @classmethod
     def from_directory(cls, employee_yaml, org_domain: str) -> "Principals":
-        data = yaml.safe_load(open(employee_yaml).read())
+        data = yaml.safe_load(Path(employee_yaml).read_text(encoding="utf-8"))
         emps = []
         for dept, people in (data.get("departments") or {}).items():
             for p in people or []:
@@ -726,7 +726,8 @@ class Principals:
                     "users": users,
                 },
                 sort_keys=False,
-            )
+            ),
+            encoding="utf-8",
         )
 
     def write_roster(self, path, settings) -> None:
@@ -758,7 +759,8 @@ class Principals:
                 },
                 sort_keys=False,
                 allow_unicode=True,
-            )
+            ),
+            encoding="utf-8",
         )
 
 
@@ -862,7 +864,7 @@ def iter_records(
             continue
         for path in sorted(base.rglob("*.json")):
             try:
-                raw = json.loads(path.read_text())
+                raw = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
             dsid = raw.get("dataset_doc_uuid")
@@ -972,7 +974,8 @@ def fetch_generated_data(settings, *, ref: str = "main") -> Path:
             indent=1,
             sort_keys=True,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     return out
 
@@ -984,7 +987,7 @@ def read_snapshot(gen_dir) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -2627,7 +2630,7 @@ class _ByoWriter:
         self._open: dict[str, tuple] = {}  # source -> (path, fh, records_written)
         self._plain = None
         if shard_records is None:
-            self._plain = open(self.out_dir / "corpus.jsonl", "w")
+            self._plain = open(self.out_dir / "corpus.jsonl", "w", encoding="utf-8")
 
     def write(self, src: str, rec: dict) -> None:
         line = json.dumps(rec, ensure_ascii=False) + "\n"
@@ -2697,7 +2700,7 @@ class _ByoWriter:
             # would describe a whole the converted layer is only part of.
             manifest["layers"] = {"converted": layer}
         (self.out_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+            json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8"
         )
 
 
@@ -2760,7 +2763,7 @@ def export_byo(settings, gen_dir, out_dir, *, shard_records=None) -> dict:
 
 
 def parse_employees(path: Path) -> list[dict]:
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     employees: list[dict] = []
     for dept, people in data.get("departments", {}).items():
         for p in people or []:

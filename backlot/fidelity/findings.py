@@ -77,7 +77,7 @@ class Baseline:
 
     @classmethod
     def load(cls, path: Path) -> "Baseline":
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         ack = {}
         for e in raw.get("acknowledged", []):
             f = Finding(
@@ -121,7 +121,8 @@ class Baseline:
                 },
                 indent=2,
             )
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
 
     def identified_as(self, source: str, endpoints: tuple[str, ...]) -> "Baseline":

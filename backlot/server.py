@@ -256,7 +256,7 @@ def serve(
                 corpus = HELLO_CORPUS
             else:
                 corpus = data_dir / "corpus.jsonl"
-                corpus.write_text("\n".join(json.dumps(r) for r in records))
+                corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
         env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
         # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
         # differs, and that doesn't affect admin_token), so this resolves to whatever token the
