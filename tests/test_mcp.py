@@ -50,6 +50,7 @@ pytest.importorskip("mcp")
 from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
+from tests._helpers import python_child_env  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -1181,6 +1182,7 @@ def test_backlot_mcp_refuses_an_email_the_corpus_does_not_know(live_server):
     base, _ = live_server
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--url", base, "--user", "nobody@example.com"],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=120,
@@ -1245,6 +1247,7 @@ def test_backlot_mcp_reports_an_unusable_corpus_and_exits(tmp_path):
     (tmp_path / "db.sqlite").write_text("not a database", encoding="utf-8")
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--source", "slack", "--data-dir", str(tmp_path)],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=120,
@@ -1260,6 +1263,7 @@ def test_backlot_mcp_refuses_an_unreachable_url():
     server, and quietly serving a different corpus in its place would be the wrong kind of help."""
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--url", "http://127.0.0.1:1"],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=60,
