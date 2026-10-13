@@ -2894,11 +2894,11 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     nothing the caller can see is its 404. The operation is the one :func:`_jira_operation` names.
 
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
-    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own way,
-    :func:`_confluence_jaxrs_media_refusal`), then refuses a caller with no credential it resolves
-    on every operation (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an
-    undecodable value and with one holding no colon, each with a body of a type the operation does
-    not take.
+    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
+    way, :func:`_confluence_jaxrs_media_refusal`), then refuses a caller with no credential it
+    resolves on every operation (:func:`_confluence_refusal`); the 401's place was measured
+    2026-10-12 with an undecodable value and with one holding no colon, each with a body of a type
+    the operation does not take.
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the

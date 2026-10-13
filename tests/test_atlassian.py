@@ -4771,8 +4771,7 @@ _TOMCAT_PAGE = "text/html;charset=utf-8"
         ("GET", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("TRACE", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
         ("PATCH", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        # its firewall: a tag it names in the path, read after two percent-decodings and with
-        # entities resolved, and a step up a directory in the path or at a query value
+        # its firewall (`errors.atlassian.waf_blocks`): a tag, and a step up a directory
         ("GET", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
         ("GET", "/wiki/rest/api/space/A<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
@@ -4884,8 +4883,7 @@ def test_atlassian_front_door_answers_before_either_product(
         ("POST", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
         ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 415),
         ("DELETE", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 404),
-        # `issue/archive` is an operation of its own that `issue/{key}` also matches: its write,
-        # which real runs (a 400) and Backlot does not, rather than an issue 404 for `archive`
+        # `issue/archive`'s own write, which real runs (a 400) and Backlot does not
         ("PUT", "/rest/api/3/issue/archive", "{}", 405),
     ],
 )
