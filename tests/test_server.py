@@ -19,7 +19,7 @@ import pytest
 import backlot
 import backlot.server
 from backlot.server import _terminate
-from tests._helpers import complete, readline_within
+from tests._helpers import POSIX_SIGNALS, complete, readline_within
 
 
 def _get(url: str) -> dict:
@@ -261,44 +261,53 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
 
 
 # A process that holds `serve()` and nothing else, as a library caller does: it prints the server's
-# URL and pid, then waits for its stdin to close.
+# URL and pid, and with `FORK` set the pid of a child it forked that only sleeps, then waits for its
+# stdin to close.
 _HOLDS_A_SERVER = """
-import sys
+import os, sys, time
 import backlot
 import backlot.server
 
 with backlot.serve() as s:
-    print(s.base_url, backlot.server._CHILDREN[-1].pid, flush=True)
+    forked = ""
+    if os.environ.get("FORK"):
+        forked = os.fork()
+        if forked == 0:
+            time.sleep(60)
+            os._exit(0)
+    print(s.base_url, backlot.server._CHILDREN[-1].pid, forked, flush=True)
     sys.stdin.read()
 """
 
-
-_POSIX_SIGNAL = pytest.mark.skipif(
-    sys.platform == "win32", reason="a POSIX signal, which Windows has no separate equivalent of"
-)
+_FORKS = pytest.mark.skipif(not hasattr(os, "fork"), reason="forks, which Windows cannot")
 
 
 @pytest.mark.windows
 @pytest.mark.parametrize(
-    "end",
+    "end, forks",
     [
-        "kill",
-        pytest.param("SIGTERM", marks=_POSIX_SIGNAL),
-        pytest.param("SIGHUP", marks=_POSIX_SIGNAL),
+        pytest.param("kill", False, id="kill"),
+        pytest.param("SIGTERM", False, marks=POSIX_SIGNALS, id="SIGTERM"),
+        pytest.param("SIGHUP", False, marks=POSIX_SIGNALS, id="SIGHUP"),
+        pytest.param("kill", True, marks=_FORKS, id="kill with a forked child alive"),
     ],
 )
-def test_the_server_ends_with_the_process_that_started_it(end):
+def test_the_server_ends_with_the_process_that_started_it(end, forks):
     """A process holding `serve()` that ends without unwinding it takes its server with it, through
-    the stdin pipe `serve()` starts the server on. `kill()` is SIGKILL on POSIX and
-    `TerminateProcess` on Windows; SIGTERM and SIGHUP end a POSIX process by their default
-    disposition."""
+    the stdin pipe `serve()` starts the server on, and a child it forked that is still running does
+    not hold the server up. `kill()` is SIGKILL on POSIX and `TerminateProcess` on Windows; SIGTERM
+    and SIGHUP end a POSIX process by their default disposition."""
     holder = subprocess.Popen(
-        [sys.executable, "-c", _HOLDS_A_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        [sys.executable, "-c", _HOLDS_A_SERVER],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env={**os.environ, "FORK": "1"} if forks else None,
     )
+    forked = []
     try:
         line = readline_within(holder.stdout, 120)
         assert line, "the process holding serve() printed no URL within 120s"
-        url, pid = line.decode().split()
+        url, pid, *forked = line.decode().split()
         if end == "kill":
             holder.kill()
         else:
@@ -309,15 +318,21 @@ def test_the_server_ends_with_the_process_that_started_it(end):
             holder.kill()
     port = int(url.rsplit(":", 1)[1])
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
-        except OSError:
-            break
-        time.sleep(0.2)
-    else:
-        os.kill(int(pid), signal.SIGTERM)
-        pytest.fail(f"the server on port {port} (pid {pid}) outlived the process that started it")
+    try:
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(int(pid), signal.SIGTERM)
+            pytest.fail(
+                f"the server on port {port} (pid {pid}) outlived the process that started it"
+            )
+    finally:
+        for child in forked:
+            os.kill(int(child), signal.SIGKILL)
 
 
 # --------------------------------------------------------------------------- data_dir
@@ -492,7 +507,9 @@ def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):
 def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_path):
     """A table this build reads that the DB does not have, then a column one of its tables does
     not have -- rather than an OperationalError per read either way. There is no migration -- a
-    corpus is re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+    corpus is re-imported, not upgraded in place -- so naming the gap is the whole remedy. `serve()`
+    over that data dir reports the same refusal, with the code uvicorn exits with when the app does
+    not start (3) and nothing after it."""
     import sqlite3
 
     import pytest
@@ -525,6 +542,12 @@ def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_pa
             pass
     assert "gdrive_sheets" in str(e.value)
     assert "backlot import" in str(e.value)
+    with pytest.raises(RuntimeError) as e:
+        with backlot.serve(data_dir=settings.data_dir):
+            pass
+    assert "exited with code 3 " in str(e.value)
+    assert "gdrive_sheets" in str(e.value)
+    assert "Fatal Python error" not in str(e.value)
 
     # A column this build reads that the table predates is the same refusal, named as
     # `table.column` — before the check knew columns, `name contains` was a bare 500 per request

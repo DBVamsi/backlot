@@ -167,6 +167,20 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
 _CHILDREN: list[subprocess.Popen] = []
 
 
+def _close_server_pipes_in_a_fork() -> None:
+    """In a child forked from this process, close its copy of each server's stdin pipe. The servers
+    are this process's: a copy the child kept would hold each one up after this process ended,
+    until the child ended too (measured on macOS on 2026-10-13, with a child of
+    ``multiprocessing``'s "fork" start method still sleeping)."""
+    for proc in _CHILDREN:
+        if proc.stdin is not None:
+            proc.stdin.close()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX; on Windows a child cannot inherit the pipe's handle
+    os.register_at_fork(after_in_child=_close_server_pipes_in_a_fork)
+
+
 def stop_children() -> None:
     """Terminate and reap every server ``serve()`` started that is still running.
 
@@ -326,11 +340,12 @@ def serve(
                 env=server_env,
                 # A pipe of this process's own rather than the caller's stdin, which under
                 # `backlot mcp` is the MCP protocol pipe. Nothing is written to it: its write end
-                # closes when this process ends, however it ends, and `--exit-on-stdin-close` stops
-                # the server at that end of file. Measured on 2026-10-13, a process holding
-                # `serve()` and nothing else left the server answering when it ended on SIGTERM,
-                # SIGHUP or SIGKILL on macOS, or by `TerminateProcess` on Windows 11; on this pipe
-                # the server's port closed within a second of each.
+                # closes when this process ends, however it ends (a child forked from it closes its
+                # copy, `_close_server_pipes_in_a_fork`), and `--exit-on-stdin-close` stops the
+                # server at that end of file. A server given `DEVNULL` instead goes on answering
+                # once the process holding `serve()` ends on SIGTERM, SIGHUP or SIGKILL on macOS,
+                # or by `TerminateProcess` on Windows 11 (measured 2026-10-13); on this pipe its
+                # port closed within a second of each.
                 stdin=subprocess.PIPE,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,

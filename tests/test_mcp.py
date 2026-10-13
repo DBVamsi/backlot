@@ -49,7 +49,7 @@ pytest.importorskip("mcp")
 from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
-from tests._helpers import python_child_env, readline_within  # noqa: E402
+from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -957,13 +957,6 @@ def _initialised_mcp(*args, env=None):
     return proc
 
 
-# Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
-# and its `Popen.send_signal` takes SIGTERM, sent as `Popen.terminate()` (see `_TERMINATED`),
-# CTRL_C_EVENT and CTRL_BREAK_EVENT, and refuses the rest.
-_POSIX_SIGNALS = pytest.mark.skipif(
-    sys.platform == "win32", reason="delivers a POSIX signal, which Windows has no equivalent of"
-)
-
 # The exit code `Popen.terminate()` leaves `backlot mcp` with: 128 + SIGTERM from its handler on
 # POSIX, and on Windows the 1 that `terminate()` passes to `TerminateProcess`.
 _TERMINATED = 1 if sys.platform == "win32" else 128 + signal.SIGTERM
@@ -998,7 +991,7 @@ def _running(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
-@_POSIX_SIGNALS
+@POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signame):
     """A supervisor that signals its child and waits must not hang. With stdin held open, each
@@ -1034,7 +1027,7 @@ mcp.run(["slack"], url=sys.argv[2])
 """
 
 
-@_POSIX_SIGNALS
+@POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, signame):
     """A Python-level handler runs on the main thread only, once that thread is back in the
@@ -1065,9 +1058,9 @@ def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, 
     "end, code",
     [
         pytest.param(
-            "SIGHUP", 128 + getattr(signal, "SIGHUP", 0), marks=_POSIX_SIGNALS, id="SIGHUP"
+            "SIGHUP", 128 + getattr(signal, "SIGHUP", 0), marks=POSIX_SIGNALS, id="SIGHUP"
         ),
-        pytest.param("SIGKILL", -getattr(signal, "SIGKILL", 9), marks=_POSIX_SIGNALS, id="SIGKILL"),
+        pytest.param("SIGKILL", -getattr(signal, "SIGKILL", 9), marks=POSIX_SIGNALS, id="SIGKILL"),
         pytest.param("terminate", _TERMINATED, marks=pytest.mark.windows, id="terminate"),
     ],
 )

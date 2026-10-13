@@ -17,9 +17,11 @@ import importlib
 import json
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from backlot.config import Settings, get_settings
@@ -236,6 +238,14 @@ def python_child_env(**extra: str) -> dict[str, str]:
     unless told otherwise, so on Windows a non-ASCII message from the child would reach the test as
     a decode error instead of the message."""
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
+
+
+# Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
+# and its `Popen.send_signal` takes SIGTERM (sent as `Popen.terminate()`), CTRL_C_EVENT and
+# CTRL_BREAK_EVENT, and refuses the rest.
+POSIX_SIGNALS = pytest.mark.skipif(
+    sys.platform == "win32", reason="delivers a POSIX signal, which Windows has no equivalent of"
+)
 
 
 def readline_within(pipe, timeout: float) -> bytes | None:

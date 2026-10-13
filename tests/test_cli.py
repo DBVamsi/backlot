@@ -437,8 +437,9 @@ def test_serve_stops_at_stdin_eof_only_when_asked(
         assert raised.wait(5 if stops else 1) is stops
         assert sent == ([signal.SIGTERM] if stops else [])
     finally:
-        # A watcher still reading holds the reader's lock, and must not reach the real
-        # `raise_signal` after this test: end of file first, then wait for it, then close.
+        # A watcher still reading must not reach the real `raise_signal` after this test, nor read
+        # the descriptor's number once another file reuses it: end of file first, then wait for
+        # it, then close.
         writer.close()
         for watcher in watchers:
             watcher.join(5)
