@@ -550,7 +550,7 @@ def gh_labelled(tmp_path_factory):
         for i, (title, labels, kind, visibility) in enumerate(rows)
     ]
     with corpus_client(tmp_path_factory.mktemp("gh_labelled"), records) as (c, settings):
-        tokens = yaml.safe_load(settings.tokens_path.read_text())
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         org = c.get("/_meta/users").json()["org"]
         yield (
             c,
