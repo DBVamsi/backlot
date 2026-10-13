@@ -341,9 +341,9 @@ def _stop_at_stdin_eof() -> None:
 
     It reads the file descriptor, not ``sys.stdin.buffer``: a buffered read holds the stream's lock
     while it waits, and an exit that finalizes the interpreter with stdin still open (a startup
-    uvicorn refuses, or SIGINT alone) then cannot close ``sys.stdin``. On macOS on 2026-10-13 that
-    exit aborted with "Fatal Python error: _enter_buffered_busy" and code -6 instead of uvicorn's
-    3, or 0 after SIGINT."""
+    uvicorn refuses, or SIGINT alone) then cannot close ``sys.stdin``. Reading the buffer, such an
+    exit aborts with "Fatal Python error: _enter_buffered_busy" and code -6 where uvicorn's is 3,
+    or 0 after SIGINT (macOS, 2026-10-13)."""
     import signal
     import threading
 
