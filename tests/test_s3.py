@@ -4845,9 +4845,12 @@ _REFUSAL_ROWS_UNIT = [
      *_NEGATIVE_EXPIRES),
     ("query X-Amz-Expires the greatest long", {}, _presign(_now(), expires="9223372036854775807"),
      *_OVER_A_WEEK),
+    # Signed when the row runs rather than when the module is imported: they stand for 300
+    # seconds, and a run that took longer than that to reach them found them expired (a whole-suite
+    # run with every extra installed, on Windows on 2026-10-13, answered AccessDenied for all five).
     *[
         (f"query X-Amz-Expires {value!r} is 300", {},
-         _presign(_now(), expires=value, akid=_UNKNOWN), *_UNKNOWN_KEY)
+         lambda value=value: _presign(_now(), expires=value, akid=_UNKNOWN), *_UNKNOWN_KEY)
         for value in ("+300", "0300", "٣٠٠", "３００", "0" * 40 + "300")
     ],
     # A V2 query's `Expires`: every negative long is a date, a positive one to an int32's largest,
@@ -4940,6 +4943,8 @@ def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
     them. Each carries the payload hash boto3 sends, and a row that sends none names it as
     ``None``."""
     sent = {"host": "backlot", "x-amz-content-sha256": "UNSIGNED-PAYLOAD", **headers}
+    if callable(query):
+        query = query()
     caller, err = auth.resolve_sigv4(
         _request(
             "GET", "/s3/eng-artifacts", query, {k: v for k, v in sent.items() if v is not None}
