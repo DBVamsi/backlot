@@ -51,16 +51,17 @@ async def _checked_before_the_route(request: Request) -> None:
     a parameter's 400 and the route's own 404. Jira answers a `POST search/jql` body of a type it
     does not read with its 415 (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an
     empty body's 400, an unbounded query's 400, a parameter's 400 and the route's own answer.
-    `space/{key}/permission` is the one route this leaves alone: the 405 it answers comes first.
+    `space/{key}/permission` is the one route this asks the 401 alone of: the 405 it answers comes
+    before the 406.
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
-    if endpoint is confluence_space_permission:
-        return
     jaxrs = False
     # the decoded path picks the product only; the refusals echo `_echoed_path` where they echo one
     if errors_atlassian.is_confluence(request.url.path):
         if auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
             _confluence_caller(request)
+        if endpoint is confluence_space_permission:
+            return
         jaxrs = endpoint is confluence_cql_search
     elif endpoint is jira_search and request.method == "POST":
         _refuse_a_search_media_type(request)

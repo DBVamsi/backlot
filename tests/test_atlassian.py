@@ -5287,6 +5287,8 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "none", "application/*+json", None, 403, _JSON, None, {}),
     ("GET", _SPACES, "none", None, None, 403, _JSON, None, {}),
     ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None, {}),
+    ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
+    + (None, {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
