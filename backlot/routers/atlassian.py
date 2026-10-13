@@ -2710,8 +2710,9 @@ _CONFLUENCE_NOT_PERMITTED_GETS = (
 #: `missing_operation`, these 23 answered a JSON body or none with
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` (but the two that ran,
 #: :data:`_CONFLUENCE_RUN_ANONYMOUSLY`), another type with an empty 415 (but the three under
-#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` with no `/`
-#: (`foo`) with Tomcat's 400 page (:func:`_confluence_jaxrs_media_refusal`).
+#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` Jersey cannot
+#: read (`foo`) with Tomcat's 400 page, the two that ran included
+#: (``errors.atlassian.jaxrs_media_type_refusal`` has which values those are).
 _CONFLUENCE_JAXRS_WRITES = tuple(
     f"{method} /wiki/rest/{path}"
     for method, path in (
@@ -2898,11 +2899,9 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
 
 def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
     """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
-    it will not read, or None: Tomcat's 400 page for one that cannot be read as a type, and an empty
-    415 with no `content-type` for a type other than JSON, where the service checks the type (all
-    but :data:`_CONFLUENCE_JAXRS_UNTYPED`). A request with no `Content-Type` passes. Measured
-    2026-10-13 with `text/plain`, `application/xml` and `foo` on each of them, with no credential
-    and (on `POST content/archive`) with one."""
+    it will not read, or None: Tomcat's 400 page, or an empty 415 with no `content-type` where the
+    service checks the type (all but :data:`_CONFLUENCE_JAXRS_UNTYPED`), as
+    ``errors.atlassian.jaxrs_media_type_refusal`` decides."""
     if not _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
         return None
     status = errors_atlassian.jaxrs_media_type_refusal(
@@ -2934,9 +2933,9 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
     type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
     way, :func:`_confluence_jaxrs_media_refusal`), then refuses a caller with no credential it
-    resolves on every operation (:func:`_confluence_refusal`); the 401's place was measured
-    2026-10-12 with an undecodable value and with one holding no colon, each with a body of a type
-    the operation does not take.
+    resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
+    (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
+    and with one holding no colon, each with a body of a type the operation does not take.
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -3396,8 +3395,7 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     layer = request.scope.get("atlassian_front_door")
     if layer is not None:
         # An answer given in front of the application never reaches what stamps the rest
-        # (``errors.atlassian.front_door``): the gateway's carries its own two ids and the edge's
-        # two, the CDN's 403s the edge's two, and its 405 and its 400 nothing.
+        # (``errors.atlassian.FrontDoor`` names what each layer adds).
         if layer == "gateway":
             return _gateway_headers(request)
         return dict(_EDGE) if layer == "cdn edge" else {}

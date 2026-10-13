@@ -74,7 +74,7 @@ def connect_token_body() -> dict:
 # Jira's own answer, not the gateway's: it carries what ``backlot.routers.atlassian.vendor_headers``
 # puts on Jira's answers and not what that puts on the gateway's own refusals, and an operation's
 # media-type check (:func:`refuse_a_media_type`) answers before it. Which operations those are is
-# ``backlot.routers.atlassian.unmatched_path``'s to say; measured on Jira Cloud, 2026-09-30. The
+# ``backlot.routers.atlassian._published_answer``'s to say; measured on Jira Cloud, 2026-09-30. The
 # media type follows `Accept` there: `text/html;charset=UTF-8` for `*/*`, the one this server sends
 # whatever `Accept` says, `text/plain` with no `Accept` and `application/json` for
 # `application/json` (on `myself` and `OPTIONS serverInfo`, the same day).
@@ -605,11 +605,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     `Accept`. Measured 2026-10-12 on the attachment writes and `POST space/{key}/permission`: an
     absent or empty `Content-Type` is named `''`, a type is named as :func:`_parse_media_type` reads
     it (`APPLICATION/JSON` as `application/json`, `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters
-    kept), and a value with no `/` (`foo`) is refused as no type at all. A value Spring cannot read
-    for another reason is named as sent here, where real says why it could not read it
-    (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
-    `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and
-    the code are the same.
+    kept), and a value with no `/` (`foo`) is `Invalid mime type "foo": does not contain '/'`. A
+    value Spring cannot read for another reason is named as sent here, where real says why it could
+    not read it (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
+    `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and the
+    code are the same.
     """
     value = headers.get("content-type") or ""
     media_type = _parse_media_type(value) if value else None
@@ -633,17 +633,72 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     )
 
 
-def jaxrs_media_type_refusal(value: str | None, *, checks_type: bool) -> int | None:
-    """The status a Confluence JAX-RS write refuses a `Content-Type` of ``value`` with, or None:
-    400 (Tomcat's page, :data:`TOMCAT_BAD_REQUEST`) for one it cannot read as a type, measured with
-    `foo`, and where it ``checks_type``, 415 with no body for a type other than JSON (`text/plain`
-    and `application/xml`), measured 2026-10-13. No `Content-Type` is no refusal."""
-    if not value:
+#: A type, a subtype or a parameter's name or bare value, as Jersey's header reader takes one.
+_JERSEY_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+def jersey_media_type(value: str) -> tuple[str, str] | None:
+    """``value`` as Confluence's JAX-RS services read a media type, its type and subtype
+    lower-cased, or None where they cannot read it.
+
+    Measured 2026-10-13 on `POST template` with 45 `Content-Type` values: `type/subtype` in any
+    case, then parameters each after a `;`, where whitespace may stand before a `;` or after it and
+    an empty one is skipped (`application/json;;`, `application/json; `), and a parameter is a name,
+    a `=` with no whitespace either side, and a value that is a token or a quoted string. A
+    parameter with no `=` (`;x`), with nothing after its `=` (`;x=`), with whitespace beside the `=`
+    (`;charset =utf-8`) or with an unterminated quote makes the header unreadable, and so does an
+    empty header, a comma or anything after the subtype but a parameter. A charset is not looked
+    up (`charset=nope` is read).
+    """
+    text = value.strip(" \t")
+    head = re.match(r"([^/;\s]+)/([^;\s]+)[ \t]*", text)
+    if not head or not (_JERSEY_TOKEN.fullmatch(head[1]) and _JERSEY_TOKEN.fullmatch(head[2])):
         return None
-    media_type = _parse_media_type(value)
+    pos = head.end()
+    while pos < len(text):
+        if text[pos] != ";":
+            return None
+        pos += 1
+        while pos < len(text) and text[pos] in " \t":
+            pos += 1
+        if pos == len(text) or text[pos] == ";":
+            continue
+        name = _JERSEY_TOKEN.match(text, pos)
+        if not name or name.end() == len(text) or text[name.end()] != "=":
+            return None
+        pos = name.end() + 1
+        if text.startswith('"', pos):
+            close = pos + 1
+            while close < len(text) and text[close] != '"':
+                close += 1 if text[close] != "\\" else 2
+            if close >= len(text):
+                return None
+            pos = close + 1
+        else:
+            bare = _JERSEY_TOKEN.match(text, pos)
+            if not bare:
+                return None
+            pos = bare.end()
+        while pos < len(text) and text[pos] in " \t":
+            pos += 1
+    return head[1].lower(), head[2].lower()
+
+
+def jaxrs_media_type_refusal(value: str | None, *, checks_type: bool) -> int | None:
+    """The status a Confluence JAX-RS write refuses a `Content-Type` of ``value`` with, or None: 400
+    (Tomcat's page, :data:`TOMCAT_BAD_REQUEST`) for one :func:`jersey_media_type` cannot read, an
+    empty value among them, and where it ``checks_type``, 415 with no body for a type JSON is not
+    compatible with in Jersey's sense, a wildcard type or subtype matching anything (`*/*`,
+    `application/*` and `*/json` are read as JSON, `text/*` and `application/*+json` are not),
+    measured 2026-10-13. An absent `Content-Type` is not refused here; real's `XSRF check failed`
+    403 for a `POST` with none is not copied."""
+    if value is None:
+        return None
+    media_type = jersey_media_type(value)
     if media_type is None:
         return 400
-    if checks_type and not _takes(("application/json",), media_type):
+    kind, subtype = media_type
+    if checks_type and not (kind == "*" or (kind == "application" and subtype in ("*", "json"))):
         return 415
     return None
 
@@ -967,8 +1022,12 @@ _CLOUDFRONT_PAGE = (
     "</BODY></HTML>"
 )
 #: Why the CDN refuses `TRACE` and `CONNECT` with 405, a method spelled outside the 403's rule with
-#: 400, and a path carrying `%00` with 400.
+#: 400, and a path carrying `%00` or a broken escape (:data:`_BROKEN_ESCAPE`) with 400.
 CDN_BAD_REQUEST = "Bad request."
+#: A `%` in the path that two hex digits do not follow: `%zz`, `%G0`, `%2g`, `%u005c`, a lone `%`
+#: or `%2` at the end, and the first `%` of `%%41`, each the CDN's 400 on both products, measured
+#: 2026-10-13. A query string's broken escape passes the CDN.
+_BROKEN_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 #: Why it refuses a method by the 403's spelling (:func:`cdn_forbids`).
 CDN_METHOD_FORBIDDEN = (
     "This distribution is not configured to allow the HTTP request method that was used for this "
@@ -985,8 +1044,9 @@ _GATEWAY_PATCH_PAGE = (
     "</body>\r\n</html>\r\n"
 )
 
-#: Tomcat's page for a Confluence path carrying an encoded slash or backslash, on
-#: `text/html;charset=utf-8` with `Content-Language: en`, measured 2026-10-12 (:func:`front_door`).
+#: Tomcat's 400 page, on `text/html;charset=utf-8` with `Content-Language: en`: for a Confluence
+#: path carrying an encoded slash (2026-10-12) or backslash (2026-10-13, :func:`front_door`), and
+#: for a `Content-Type` a JAX-RS write cannot read (2026-10-13, :func:`jaxrs_media_type_refusal`).
 TOMCAT_BAD_REQUEST = (
     '<!doctype html><html lang="en"><head><title>HTTP Status 400 – Bad Request</title>'
     '<style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b '
@@ -1009,13 +1069,17 @@ _WAF_TAGS = frozenset(
 )
 _WAF_TAG_PREFIXES = ("svg", "xsl", "!doctype", "!entity")
 _TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
-#: A step up a directory as the firewall reads one in the path: `..` followed by `/`, `\` or `;/`,
-#: measured 2026-10-12 and (`..;/`) 2026-10-13. A `..;` with no `/` after it is not refused here;
-#: real answers it further in, with a 400 page that is not copied.
-_PATH_STEP = re.compile(r"\.\.(?:;?/|\\)")
-#: The same in a query parameter's value, where the firewall reads less: `../` anywhere and `..\`
-#: only at the end of the value (`?x=..%5C` refused, `?x=..%5Cy` served), measured 2026-10-13.
-_QUERY_STEP = re.compile(r"\.\./|\.\.\\\Z")
+#: A step up a directory as the firewall reads one in the path: `..` followed by `/` or `\`
+#: anywhere, measured 2026-10-12, and a whole segment `..` followed by one or more `;` and a `/`
+#: (`/..;/`, `/..;;/`, `/..;%3B/`), measured 2026-10-13. A `..;` inside a segment (`/a..;/`) or
+#: with no `/` after its semicolons (`/..;a/`) is not refused here; real answers it further in,
+#: with a 400 page that is not copied.
+_PATH_STEP = re.compile(r"\.\.[/\\]|(?<![^/])\.\.;+/")
+#: The same in a query parameter's value, where the firewall reads less: `../` anywhere, and `..\`
+#: where a `\` or a `/` follows it or the value ends (`?x=..%5C`, `?x=..%5C%5Cy` and
+#: `?x=..%5C%2Fy` refused, `?x=..%5Cy` and `?x=..%5C.` served, the whole 0x01-0x7F range swept
+#: after the `\`), measured 2026-10-13. A parameter's name is not read (`?..%2F=1` served).
+_QUERY_STEP = re.compile(r"\.\./|\.\.\\(?:[\\/]|\Z)")
 
 
 def _decoded_twice(text: str) -> str:
@@ -1039,7 +1103,8 @@ def _resolve_entities(text: str) -> str:
 def waf_blocks(raw_path: str, raw_query: str) -> bool:
     """Whether the CDN's firewall refuses the request, with its 403 (:data:`CDN_BLOCKED`).
 
-    What is copied is the part of it a table can hold, measured 2026-10-12 on both products: a tag
+    What is copied is the part of it a table can hold, measured on both products 2026-10-12 (the
+    query's rule, `..;` and the `<!` prefixes 2026-10-13): a tag
     :data:`_WAF_TAGS` names in the path, read after two percent-decodings and with HTML entities
     resolved, and a step up a directory in the path (:data:`_PATH_STEP`) or in a query parameter's
     value (:data:`_QUERY_STEP`), read after the two percent-decodings alone. The firewall refuses
@@ -1084,24 +1149,25 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     """What answers an `/atlassian` request before either product sees it, or None.
 
     The checks a request meets, in order, measured 2026-10-12 by sending two of them wrong at once:
-    the CDN refuses a path carrying `%00` with its 400, ahead of everything (a `TRACE` or a
-    `PROPFIND` carrying one is that 400 too); then a method it does not pass on
-    (:data:`SERVED_METHODS`); then its firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the
-    firewall refuses is the method's 403 and a `PATCH` on one is the firewall's; then the gateway's
-    `PATCH` (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash
-    anywhere under `/wiki/` with 400, for every method, every credential and the `Accept` values
-    `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes the
-    decoded path; an encoded backslash is the same 400 (2026-10-13). `/wiki/spaces/` is the
-    exception, the web app's own pages, which answered both with 200 (2026-10-13). Each layer's
-    answer is the same whatever the credential, and the gateway's Connect-token 403 comes after all
-    of them. Which product a path is the gateway's to decide, and it reads the path with each run of
-    slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    the CDN refuses a path carrying `%00` or a broken escape (:data:`_BROKEN_ESCAPE`, 2026-10-13)
+    with its 400, ahead of everything (a `TRACE`, a `PROPFIND` or a tag the firewall names beside
+    one is that 400 too); then a method it does not pass on (:data:`SERVED_METHODS`); then its
+    firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the firewall refuses is the method's
+    403 and a `PATCH` on one is the firewall's; then the gateway's `PATCH`
+    (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash anywhere
+    under `/wiki/` with 400, for every method, every credential and the `Accept` values `*/*`,
+    `application/json`, `application/xml` and none, where Jira decodes one and routes the decoded
+    path; an encoded backslash is the same 400 (2026-10-13). `/wiki/spaces/` is the exception, in
+    any case (`/wiki/SPACES/`), the web app's own pages, which answered both with 200 (2026-10-13).
+    Each layer's answer is the same whatever the credential, and the gateway's Connect-token 403
+    comes after all of them. Which product a path is the gateway's to decide, and it reads the path
+    with each run of slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
     where an encoded slash and `%00` can still be told from a decoded one.
     """
-    if "%00" in raw_path:
+    if "%00" in raw_path or _BROKEN_ESCAPE.search(raw_path):
         return FrontDoor(
             400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
         )
@@ -1128,7 +1194,7 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     encoded = collapsed.lower()
     if (
         collapsed.startswith(f"{WIKI}/")
-        and not collapsed.startswith(f"{WIKI}/spaces/")
+        and not encoded.startswith(f"{WIKI}/spaces/")
         and ("%2f" in encoded or "%5c" in encoded)
     ):
         return FrontDoor(
