@@ -626,9 +626,9 @@ def names_a_query_token(query: Mapping[str, str]) -> bool:
 
 def token_in_query() -> GoogleError:
     """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, whatever the
-    value and whether or not a credential came in the header beside it. The names are
-    `QUERY_TOKENS` in any case (:func:`names_a_query_token`); a name that only resembles one is left
-    to the download's other refusals.
+    value, beside a header credential that resolves as beside none. The names are `QUERY_TOKENS` in
+    any case (:func:`names_a_query_token`); a name that only resembles one is left to the download's
+    other refusals.
 
     Measured 2026-10-13 on `files.export`; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS``
     holds the cases. `files.get?alt=media` answered it with an empty value and inside a batch; sent

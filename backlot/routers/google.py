@@ -307,7 +307,8 @@ def _credential(request: Request) -> tuple[bool, str | None]:
     return _query_credential(request, gated=True) or (False, None)
 
 
-# The prefixes of a query value real's front end reads as a token. Any other value is no credential.
+# The prefixes a query value needs for real's front end to read it as a token, behind no header or
+# one that is no credential (`_credential` says which header lifts the gate).
 _QUERY_TOKEN_PREFIXES = ("ya29.", "1/")
 
 
