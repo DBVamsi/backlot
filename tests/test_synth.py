@@ -51,6 +51,7 @@ class _WindowsDatetime(datetime.datetime):
         return super().fromtimestamp(t, tz)
 
 
+@pytest.mark.windows
 @pytest.mark.parametrize(
     "render, ts, expected",
     [

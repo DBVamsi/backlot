@@ -873,6 +873,7 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     assert _epoch("1770746760") == 1770746760
 
 
+@pytest.mark.windows
 @pytest.mark.parametrize(
     "written, second",
     [
