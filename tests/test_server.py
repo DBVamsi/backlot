@@ -6,9 +6,11 @@ import json
 import ntpath
 import os
 import posixpath
+import signal
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from types import SimpleNamespace
 
@@ -17,7 +19,7 @@ import pytest
 import backlot
 import backlot.server
 from backlot.server import _terminate
-from tests._helpers import complete
+from tests._helpers import complete, readline_within
 
 
 def _get(url: str) -> dict:
@@ -256,6 +258,50 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
     )
     _terminate(proc, timeout=0.2)
     assert proc.poll() is not None
+
+
+# A process that holds `serve()` and nothing else, as a library caller does: it prints the server's
+# URL and pid, then waits for its stdin to close.
+_HOLDS_A_SERVER = """
+import sys
+import backlot
+import backlot.server
+
+with backlot.serve() as s:
+    print(s.base_url, backlot.server._CHILDREN[-1].pid, flush=True)
+    sys.stdin.read()
+"""
+
+
+@pytest.mark.windows
+@pytest.mark.skipif(sys.platform != "win32", reason="a job object is Windows' own")
+def test_the_server_ends_with_a_process_ended_by_terminate_process():
+    """A process holding `serve()` and ended by `Popen.kill()`, which on Windows is
+    `TerminateProcess`, takes its server with it, through the job `_end_with_this_process` puts
+    the server in. On POSIX that `kill()` is a SIGKILL, which the server outlives."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLDS_A_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+    )
+    try:
+        line = readline_within(holder.stdout, 120)
+        assert line, "the process holding serve() printed no URL within 120s"
+        url, pid = line.decode().split()
+        holder.kill()
+        holder.wait(timeout=30)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+    port = int(url.rsplit(":", 1)[1])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+        except OSError:
+            break
+        time.sleep(0.2)
+    else:
+        os.kill(int(pid), signal.SIGTERM)
+        pytest.fail(f"the server on port {port} (pid {pid}) outlived the process that started it")
 
 
 # --------------------------------------------------------------------------- data_dir

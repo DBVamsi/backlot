@@ -32,7 +32,6 @@ import http.server
 import json
 import os
 import re
-import select
 import shutil
 import signal
 import socket
@@ -50,7 +49,7 @@ pytest.importorskip("mcp")
 from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
-from tests._helpers import python_child_env  # noqa: E402
+from tests._helpers import python_child_env, readline_within  # noqa: E402
 
 
 def _docker_available() -> bool:
@@ -952,13 +951,54 @@ def _initialised_mcp(*args, env=None):
     }
     proc.stdin.write((json.dumps(init) + "\n").encode())
     proc.stdin.flush()
-    ready, _, _ = select.select([proc.stdout], [], [], 120)
-    assert ready, "no initialize response within 120s"
-    line = proc.stdout.readline()
+    line = readline_within(proc.stdout, 120)
+    assert line is not None, "no initialize response within 120s"
     assert b'"result"' in line, line
     return proc
 
 
+# Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
+# and its `Popen.send_signal` takes SIGTERM, sent as `Popen.terminate()` (see `_TERMINATED`),
+# CTRL_C_EVENT and CTRL_BREAK_EVENT, and refuses the rest.
+_POSIX_SIGNALS = pytest.mark.skipif(
+    sys.platform == "win32", reason="delivers a POSIX signal, which Windows has no equivalent of"
+)
+
+# The exit code `Popen.terminate()` leaves `backlot mcp` with: 128 + SIGTERM from its handler on
+# POSIX, and on Windows the 1 that `terminate()` passes to `TerminateProcess`.
+_TERMINATED = 1 if sys.platform == "win32" else 128 + signal.SIGTERM
+
+
+def _running(pid: int) -> bool:
+    """Whether process ``pid`` is still running. On Windows `os.kill(pid, 0)` cannot ask that:
+    signal 0 there is CTRL_C_EVENT, which `os.kill` sends as a console event."""
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information, still_active = 0x1000, 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@_POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signame):
     """A supervisor that signals its child and waits must not hang. With stdin held open, each
@@ -994,6 +1034,7 @@ mcp.run(["slack"], url=sys.argv[2])
 """
 
 
+@_POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, signame):
     """A Python-level handler runs on the main thread only, once that thread is back in the
@@ -1020,10 +1061,20 @@ def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, 
     assert code == 128 + sig, (code, proc.stderr.read()[-500:])
 
 
-def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
-    """The server `attach` starts goes with the process on a signal too, not only when stdin
-    closes — SIGHUP is the one whose default disposition would have ended this process instantly
-    with the server left listening."""
+@pytest.mark.parametrize(
+    "end, code",
+    [
+        pytest.param(
+            "SIGHUP", 128 + getattr(signal, "SIGHUP", 0), marks=_POSIX_SIGNALS, id="SIGHUP"
+        ),
+        pytest.param("terminate", _TERMINATED, marks=pytest.mark.windows, id="terminate"),
+    ],
+)
+def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code):
+    """The server `attach` starts goes with the process when a supervisor ends it, not only when
+    stdin closes. SIGHUP is the signal whose default disposition would have ended this process
+    instantly with the server left listening, and `terminate()` is the end a Windows supervisor
+    has, the one `_end_with_this_process` covers."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
@@ -1031,13 +1082,16 @@ def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
     env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
     proc = _initialised_mcp("--source", "slack", env=env)
     try:
-        proc.send_signal(signal.SIGHUP)
-        code = proc.wait(timeout=30)
+        if end == "terminate":
+            proc.terminate()
+        else:
+            proc.send_signal(getattr(signal, end))
+        exited = proc.wait(timeout=30)
         err = proc.stderr.read().decode()
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert code == 128 + signal.SIGHUP, (code, err[-500:])
+    assert exited == code, (exited, err[-500:])
     up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
     assert up, err
     port = int(up.group(1))
@@ -1053,23 +1107,21 @@ def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
 
 
 # `backlot mcp` with the readiness poll held: `serve()` has spawned its server but not yielded, so
-# `attach` has nothing to close yet. The child's pid goes to stderr as it is spawned, so the test
-# can signal the parent inside that window without guessing at timing, and can check on the child
-# afterwards. Patches the *driver* process only; `backlot.mcp.run` and `serve()` are the real ones.
+# `attach` has nothing to close yet. The child's pid goes to stderr as `serve()` adds it to
+# `_CHILDREN`, so the test can signal the parent inside that window without guessing at timing,
+# and can check on the child afterwards. Patches the *driver* process only; `backlot.mcp.run` and
+# `serve()` are the real ones.
 _MCP_HELD_BEFORE_READY = """
-import subprocess, sys, time
+import sys, time
 import backlot.server as server
 import backlot.mcp as mcp
 
-_Popen = subprocess.Popen
+class Announcing(list):
+    def append(self, proc):
+        super().append(proc)
+        print(f"SPAWNED {proc.pid}", file=sys.stderr, flush=True)
 
-class Announcing(_Popen):
-    def __init__(self, args, *a, **k):
-        super().__init__(args, *a, **k)
-        if "serve" in args:
-            print(f"SPAWNED {self.pid}", file=sys.stderr, flush=True)
-
-subprocess.Popen = Announcing
+server._CHILDREN = Announcing()
 _warm, _since = server._warm, None
 
 def held_warm(url, timeout):
@@ -1082,6 +1134,7 @@ mcp.run(["slack"])
 """
 
 
+@pytest.mark.windows
 def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_path):
     """A signal between `serve()`'s Popen and its yield must still end the server. `_started`
     is not set until the yield, and a client that gives up on a slow start signals exactly then —
@@ -1102,9 +1155,9 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
     try:
         deadline = time.monotonic() + 60
         while child is None:
-            ready, _, _ = select.select([proc.stderr], [], [], max(deadline - time.monotonic(), 0))
-            assert ready, "no SPAWNED line within 60s"
-            line = proc.stderr.readline().decode()
+            line = readline_within(proc.stderr, max(deadline - time.monotonic(), 0))
+            assert line is not None, "no SPAWNED line within 60s"
+            line = line.decode()
             if not line:
                 pytest.fail(f"backlot mcp ended before spawning a server, code {proc.poll()}")
             if line.startswith("SPAWNED "):
@@ -1115,17 +1168,15 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert code == 128 + signal.SIGTERM, (code, err[-500:])
+    assert code == _TERMINATED, (code, err[-500:])
     assert "Backlot is up" not in err, "the signal missed the window it was meant to land in"
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
+        if not _running(child):
             break
         time.sleep(0.2)
     else:
-        os.kill(child, signal.SIGKILL)
+        os.kill(child, getattr(signal, "SIGKILL", signal.SIGTERM))
         pytest.fail(f"the server backlot mcp spawned (pid {child}) outlived it")
 
 

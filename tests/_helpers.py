@@ -17,6 +17,7 @@ import importlib
 import json
 import os
 import re
+import threading
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -235,6 +236,19 @@ def python_child_env(**extra: str) -> dict[str, str]:
     unless told otherwise, so on Windows a non-ASCII message from the child would reach the test as
     a decode error instead of the message."""
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
+
+
+def readline_within(pipe, timeout: float) -> bytes | None:
+    """One line from a child's ``pipe``, or None when none arrives within ``timeout`` seconds.
+
+    A thread does the read, because ``select`` on a pipe is POSIX only: Windows' takes sockets, and
+    a pipe there raises WinError 10038. A read that times out stays pending on that thread, so a
+    test that gets None has to end the child rather than read the pipe again."""
+    line: list[bytes] = []
+    reader = threading.Thread(target=lambda: line.append(pipe.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout)
+    return line[0] if line else None
 
 
 def gql(client, path: str, query: str, token: str | None = None, **variables):
