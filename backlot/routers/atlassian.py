@@ -64,10 +64,20 @@ async def _checked_before_the_route(request: Request) -> None:
         jaxrs = endpoint is confluence_cql_search
     elif endpoint is jira_search and request.method == "POST":
         _refuse_a_search_media_type(request)
-    refused = errors_atlassian.not_acceptable(
-        _echoed_path(request), request.headers.get("accept"), jaxrs=jaxrs
+    _refuse_the_accept(
+        request,
+        errors_atlassian.not_acceptable(
+            _echoed_path(request), request.headers.get("accept"), jaxrs=jaxrs
+        ),
     )
+
+
+def _refuse_the_accept(request: Request, refused: errors_atlassian.AtlassianError | None) -> None:
+    """Raise ``refused``, the answer to an `Accept` (``errors.atlassian.not_acceptable``), where
+    there is one, marking the request so that :func:`vendor_headers` leaves off it what real does:
+    the quota and `search`'s cache pair, on the 406 and on the JAX-RS 400 alike (2026-10-13)."""
     if refused is not None:
+        request.scope["atlassian_accept_refused"] = True
         raise refused
 
 
@@ -2878,42 +2888,15 @@ _CONFLUENCE_CONSUMES = tuple(
 )
 
 
-#: The Jira operations that answer an `Accept` admitting no JSON with something other than the 406
-#: (``errors.atlassian.not_acceptable``): measured 2026-10-13 with no credential and
-#: `Accept: text/html` on each of the 528 GETs Jira's baseline lists, 516 answered the 406 and
-#: these twelve did not: the license counts and two Connect paths their 401
-#: (:func:`_jira_unauthenticated`), the avatar views a 400 for a type they do not know or, for one
-#: they do, the image itself.
-_JIRA_NO_ACCEPT_CHECK = frozenset(
-    f"GET /rest/{path}"
-    for path in (
-        *(
-            f"api/{version}/{tail}"
-            for version in ("2", "3")
-            for tail in (
-                "license/approximateLicenseCount",
-                "license/approximateLicenseCount/product/{}",
-                "universal_avatar/view/type/{}",
-                "universal_avatar/view/type/{}/avatar/{}",
-                "universal_avatar/view/type/{}/owner/{}",
-            )
-        ),
-        "atlassian-connect/1/addons/{}/properties",
-        "atlassian-connect/1/app/module/dynamic",
-    )
+#: The Confluence operation that answers an `Accept` admitting no JSON with its anonymous 403, in
+#: the shape that `Accept` asks for (``errors.atlassian.confluence_refusal``), rather than the 406,
+#: under each method it is published for, measured 2026-10-13. Of the 69 GETs swept the same day,
+#: the 63 the baseline lists and the six of :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`, this one did,
+#: the 21 JAX-RS ones :data:`_CONFLUENCE_NOT_PERMITTED` and :data:`_CONFLUENCE_RUN_ANONYMOUSLY` name
+#: answered the 406 with no body, and the other 47 Tomcat's page.
+_CONFLUENCE_REFUSED_BY_ACCEPT = _operations(
+    f"{method} /wiki/rest/api/space/{{}}/label" for method in ("GET", "POST", "DELETE")
 )
-#: The one Confluence operation of the 69 GETs its baseline lists that answers an `Accept`
-#: admitting no JSON with its anonymous 403, in the shape that `Accept` asks for, rather than the
-#: 406 (``errors.atlassian.confluence_refusal``), measured 2026-10-13. The JAX-RS services among
-#: the rest answer the 406 with no body, and they are the ones :data:`_CONFLUENCE_NOT_PERMITTED`
-#: and :data:`_CONFLUENCE_RUN_ANONYMOUSLY` name: of the 69, those 21 did, and the other 47 answered
-#: Tomcat's page.
-_CONFLUENCE_REFUSED_BY_ACCEPT = _operations(("GET /wiki/rest/api/space/{}/label",))
-#: The Jira operations that produce `text/plain` beside JSON, which their 406 names: of the 516
-#: that answered the sweep above with the 406, these two named `[application/json, text/plain]` and
-#: the others `[application/json]`, and `text/plain`, `TEXT/PLAIN` and `text/*` got past it to the
-#: 401 (2026-10-13).
-_JIRA_PRODUCES_TEXT = frozenset(f"GET /rest/api/{v}/mypreferences" for v in ("2", "3"))
 
 
 def _is(operations, method: str | None, vendor_path: str) -> bool:
@@ -3028,9 +3011,9 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
 
     Jira checks the request's media type where the operation does, for any caller the gateway lets
     through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, on
-    every operation but :data:`_JIRA_NO_ACCEPT_CHECK`), then refuses a caller with no credential it
-    resolves where the operation will not run anonymously, and any `OPTIONS` on one
-    (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept` check's place
+    every operation but those whose entry says ``"accept": "unchecked"``), then refuses a caller
+    with no credential it resolves where the operation will not run anonymously, and any `OPTIONS`
+    on one (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept` check's place
     2026-10-13; where the operation runs and is one of :data:`_JIRA_ISSUE_WRITES` or
     :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing the caller can see is its 404.
     The operation is the one :func:`_jira_operation` names.
@@ -3063,14 +3046,15 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
         if jaxrs is not None:
             return jaxrs
         if not _is(_CONFLUENCE_REFUSED_BY_ACCEPT, method, vendor_path):
-            refused = errors_atlassian.not_acceptable(
-                request.url.path,
-                request.headers.get("accept"),
-                jaxrs=_is(_CONFLUENCE_NOT_PERMITTED, method, vendor_path)
-                or _is(_CONFLUENCE_RUN_ANONYMOUSLY, method, vendor_path),
+            _refuse_the_accept(
+                request,
+                errors_atlassian.not_acceptable(
+                    request.url.path,
+                    request.headers.get("accept"),
+                    jaxrs=_is(_CONFLUENCE_NOT_PERMITTED, method, vendor_path)
+                    or _is(_CONFLUENCE_RUN_ANONYMOUSLY, method, vendor_path),
+                ),
             )
-            if refused is not None:
-                raise refused
         return _confluence_refusal(request, vendor_path)
     if not errors_atlassian.serves_the_jira_api(request.url.path):
         return None
@@ -3078,18 +3062,16 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     refused = _jira_media_refusal(request, operation)
     if refused is not None:
         raise refused
-    if operation is not None and operation not in _JIRA_NO_ACCEPT_CHECK:
-        refused = errors_atlassian.not_acceptable(
-            _echoed_path(request),
-            request.headers.get("accept"),
-            produces=(
-                ("application/json", "text/plain")
-                if operation in _JIRA_PRODUCES_TEXT
-                else errors_atlassian.JSON_ONLY
+    entry = _JIRA_ENTRIES.get(operation) if operation is not None else None
+    if entry is not None and entry.get("accept") != "unchecked":
+        _refuse_the_accept(
+            request,
+            errors_atlassian.not_acceptable(
+                _echoed_path(request),
+                request.headers.get("accept"),
+                produces=tuple(entry.get("produces", errors_atlassian.JSON_ONLY)),
             ),
         )
-        if refused is not None:
-            raise refused
     if auth.atlassian_caller(request).is_anonymous and (
         operation in _JIRA_UNSERVED["refused"]
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
@@ -3533,11 +3515,12 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         return dict(_EDGE) if layer == "cdn edge" else {}
     headers = {**request_ids(request), **_EDGE}
     if errors_atlassian.is_confluence(path):
-        # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 and the 406
-        # do not (2026-10-13).
+        # The search's GET/HEAD 200, 400, 403 and 404 carry the pair; Tomcat's 401 and the
+        # refusal of an `Accept` do not (2026-10-13).
         if (
             request.method in ("GET", "HEAD")
-            and status_code not in (401, 406)
+            and status_code != 401
+            and not request.scope.get("atlassian_accept_refused")
             and _vendor_path(path) == "/wiki/rest/api/search"
         ):
             headers["cache-control"] = "no-cache, no-store, must-revalidate"
@@ -3575,7 +3558,7 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     headers["x-aaccountid"] = synth.atlassian_account_id(caller.email or "unknown")
     # the quota rides on what a route answers, and on an `OPTIONS` at its path; a 405 carries none,
     # and neither does the 406 a route refuses an `Accept` with (`POST search/jql`, 2026-10-13)
-    if status_code != 406 and (
+    if not request.scope.get("atlassian_accept_refused") and (
         _a_route_answers(request)
         or (request.method == "OPTIONS" and _some_atlassian_route_matches(request))
     ):

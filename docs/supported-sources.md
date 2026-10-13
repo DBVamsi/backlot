@@ -55,26 +55,29 @@ A JSON body is the bare `application/json` on every Confluence route served. The
 is Jira's alone.
 
 A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
-every 200 but `search`'s, and on the 406. An `OPTIONS` is a 404 in the `errors` list the 405 uses
-where `Accept` admits JSON, under a `+json` type it names instead, and Tomcat's 403 page where it
-names neither, except on `search`, which answers by `Accept` as JAX-RS does: its WADL for `*/*`,
-`application/xml` or no `Accept` at all, and 204 for `application/json` or `text/html`, naming its
-three methods either way. An `Accept` that admits no JSON is a 406, ahead of the anonymous 403 and
-of every route's own answer: Tomcat's page, or the `errors` list under a `+json` type the header
-names, and no body at all on `search` and the other JAX-RS services; a 405 and a 415 take the same
-shapes, the page naming the methods or the types the route takes. A path no route serves is JAX-RS's
-own 404 — JSON when the caller asks for `application/json` by name, the `<status>` XML document
-otherwise — and a path below `space/` or `content/`, or anything under `/wiki` outside the API
-mount, is the product's HTML 404 page instead; a caller with no credential is sent from `/wiki/…`
-outside `/wiki/rest` to log in. An operation Confluence publishes that no route here serves refuses
-a caller with no credential with a served route's 403, or from a few services with
-`Current user not permitted to use Confluence`, after the 415 of a write that checks the
-`Content-Type` first; a caller whose credential resolves gets the 404 an unserved path gets, or
-at a served route's path its 405. Every answer Confluence itself gives carries `atl-request-id`, `atl-traceid`
-(the same value without its dashes), `x-confluence-request-time`, `x-content-type-options` and
-`x-xss-protection`, what the content and space services' routes answer adds the three headers that
-say the v1 REST API is deprecated, and what `search` answers a `GET` or `HEAD`, but for a 401, adds
-the `cache-control` and 1970 `expires` that say not to cache it.
+every 200 but `search`'s, and on the 406 but `search`'s. An `OPTIONS` is a 404 in the `errors` list
+the 405 uses where `Accept` admits JSON, under a `+json` type it names instead, and Tomcat's 403
+page where it names neither, except on `search`, which answers by `Accept` as JAX-RS does: its WADL
+for `*/*`, `application/xml` or no `Accept` at all, and 204 for `application/json` or `text/html`,
+naming its three methods either way. An `Accept` that admits no JSON is a 406, ahead of the
+anonymous 403 and of every route's own answer but `space/{key}/permission`'s 405: Tomcat's page, or
+the `errors` list under a `+json` type the header names, and no body at all on `search` and the
+other JAX-RS services; a 405 and a 415 take the same shapes, the page naming the methods or the
+types the route takes. Where any member of `Accept` cannot be read the 406 has no body, and the
+JAX-RS services, which pass such a member over, answer a header they cannot parse with a 400 in its
+place. A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json`
+by name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or
+anything under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with
+no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence
+publishes that no route here serves refuses a caller with no credential with a served route's 403,
+or from a few services with `Current user not permitted to use Confluence`, after the 415 of a write
+that checks the `Content-Type` first; a caller whose credential resolves gets the 404 an unserved
+path gets, or at a served route's path its 405. Every answer Confluence itself gives carries
+`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
+`x-content-type-options` and `x-xss-protection`, what the content and space services' routes answer
+adds the three headers that say the v1 REST API is deprecated, and what `search` answers a `GET` or
+`HEAD`, but for a 401 and a refusal of its `Accept`, adds the `cache-control` and 1970 `expires`
+that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -396,14 +399,15 @@ responses. Numeric ids are assigned uniquely at import, including when keys hash
 stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
 re-imported; the startup schema check names the missing column.
 
-A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
-upper-case — as real's is on every route and status measured, except where real answers a
-different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
+A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8` upper-case —
+as real's is on every route and status measured, except where real answers a different type
+altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
 `application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
 Connect token is the bare `application/json`, or XML where `Accept` names `application/xml` first.
 An `Accept` admitting no JSON draws a 406 in that RFC 7807 shape, behind a 405 and a 415 and ahead
-of the 401, a bad parameter's 400 and whatever the route answers, and the 401 takes its media type
-from `Accept`.
+of the 401, a bad parameter's 400 and whatever the route answers, on every operation but the ones
+`backlot/data/jira_unserved.json` marks, and one with any member Jira cannot read draws it with no
+body; the 401 takes its media type from `Accept`.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
@@ -433,8 +437,8 @@ page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-trac
 `PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
 burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
 where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
-request carries none of those five, and the no-endpoint 404, a 405 and an unserved operation's 415
-carry the account id alone.
+request carries none of those five, and the no-endpoint 404, a 405, a 406 and an unserved
+operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 

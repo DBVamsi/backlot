@@ -117,8 +117,8 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
     The whole response, because a vendor can decide more about an error than its dict: Google
     indents every error body and ends it with a newline whatever `prettyPrint` says, names a charset
     on the type, and answers a GET carrying `callback` at 200 as a script with the error inside it.
-    The whole request, because that last one is decided by the method and the query together, where
-    the other entry points here need only a path.
+    The whole request, because that last one is decided by the method and the query together, and
+    Atlassian's by the `Accept` header, where the other entry points here need only a path.
     """
     for envelope in _ENVELOPES:
         if envelope.owns(request.url.path):

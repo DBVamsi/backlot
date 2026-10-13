@@ -320,7 +320,7 @@ them.
 What `Accept` does is a fourth. Both products refuse one that admits none of the types a route
 answers in with a 406 ahead of most of their other refusals, and send several refusals in the shape
 it asks for (`backlot.errors.atlassian.not_acceptable` and `rendered`). Neither description declares
-a 406 or a refusal's media type, so `tests/test_atlassian.py` is the record.
+a 406, nor that a refusal's media type follows `Accept`, so `tests/test_atlassian.py` is the record.
 
 The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
 (`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads

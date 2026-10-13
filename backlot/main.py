@@ -174,9 +174,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
     # Atlassian refusal is Tomcat's page or no body at all for an `Accept` that takes no JSON.
     # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
-    # GitHub with exactly the JSONResponse it had. Measured 2026-09-15, `callback` is not why either
-    # of the others asks: Jira and Confluence ignore it outright, on an error and on a success,
-    # while GitHub honours it through an envelope of its own — `/**/cb({"meta": …, "data": …})`
+    # GitHub with FastAPI's `JSONResponse`. Measured 2026-09-15, `callback` is not why Atlassian
+    # asks: Jira and Confluence ignore it outright, on an error and on a success, while GitHub
+    # honours it through an envelope of its own — `/**/cb({"meta": …, "data": …})`
     # under `application/javascript; charset=utf-8`, with the status inside `meta` and an
     # unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)

@@ -38,10 +38,18 @@
     "DELETE /rest/api/2/mypreferences": {},
     "DELETE /rest/api/2/notificationscheme/{}": {},
     "DELETE /rest/api/2/notificationscheme/{}/notification/{}": {},
-    "DELETE /rest/api/2/permissionscheme/{}": {},
-    "DELETE /rest/api/2/permissionscheme/{}/permission/{}": {},
-    "DELETE /rest/api/2/plans/plan/{}/team/atlassian/{}": {},
-    "DELETE /rest/api/2/plans/plan/{}/team/planonly/{}": {},
+    "DELETE /rest/api/2/permissionscheme/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/2/permissionscheme/{}/permission/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/2/plans/plan/{}/team/atlassian/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/2/plans/plan/{}/team/planonly/{}": {
+      "accept": "unchecked"
+    },
     "DELETE /rest/api/2/priority/{}": {},
     "DELETE /rest/api/2/priorityscheme/{}": {},
     "DELETE /rest/api/2/project-template/remove-template": {
@@ -50,7 +58,9 @@
       ]
     },
     "DELETE /rest/api/2/project/{}/classification-level/default": {},
-    "DELETE /rest/api/2/projectCategory/{}": {},
+    "DELETE /rest/api/2/projectCategory/{}": {
+      "accept": "unchecked"
+    },
     "DELETE /rest/api/2/resolution/{}": {},
     "DELETE /rest/api/2/role/{}": {},
     "DELETE /rest/api/2/role/{}/actors": {},
@@ -106,10 +116,18 @@
     "DELETE /rest/api/3/mypreferences": {},
     "DELETE /rest/api/3/notificationscheme/{}": {},
     "DELETE /rest/api/3/notificationscheme/{}/notification/{}": {},
-    "DELETE /rest/api/3/permissionscheme/{}": {},
-    "DELETE /rest/api/3/permissionscheme/{}/permission/{}": {},
-    "DELETE /rest/api/3/plans/plan/{}/team/atlassian/{}": {},
-    "DELETE /rest/api/3/plans/plan/{}/team/planonly/{}": {},
+    "DELETE /rest/api/3/permissionscheme/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/3/permissionscheme/{}/permission/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/3/plans/plan/{}/team/atlassian/{}": {
+      "accept": "unchecked"
+    },
+    "DELETE /rest/api/3/plans/plan/{}/team/planonly/{}": {
+      "accept": "unchecked"
+    },
     "DELETE /rest/api/3/priority/{}": {},
     "DELETE /rest/api/3/priorityscheme/{}": {},
     "DELETE /rest/api/3/project-template/remove-template": {
@@ -118,7 +136,9 @@
       ]
     },
     "DELETE /rest/api/3/project/{}/classification-level/default": {},
-    "DELETE /rest/api/3/projectCategory/{}": {},
+    "DELETE /rest/api/3/projectCategory/{}": {
+      "accept": "unchecked"
+    },
     "DELETE /rest/api/3/resolution/{}": {},
     "DELETE /rest/api/3/role/{}": {},
     "DELETE /rest/api/3/role/{}/actors": {},
@@ -142,7 +162,9 @@
     "DELETE /rest/api/3/workflowscheme/{}/issuetype/{}": {},
     "DELETE /rest/api/3/workflowscheme/{}/workflow": {},
     "DELETE /rest/atlassian-connect/1/addons/{}/properties/{}": {},
-    "DELETE /rest/atlassian-connect/1/app/module/dynamic": {},
+    "DELETE /rest/atlassian-connect/1/app/module/dynamic": {
+      "accept": "unchecked"
+    },
     "DELETE /rest/forge/1/app/properties/{}": {},
     "GET /rest/api/2/announcementBanner": {},
     "GET /rest/api/2/app/field/{}/context/configuration": {},
@@ -206,9 +228,18 @@
     "GET /rest/api/2/issuetypescreenscheme/{}/project": {},
     "GET /rest/api/2/jql/function/computation": {},
     "GET /rest/api/2/label": {},
-    "GET /rest/api/2/license/approximateLicenseCount": {},
-    "GET /rest/api/2/license/approximateLicenseCount/product/{}": {},
-    "GET /rest/api/2/mypreferences": {},
+    "GET /rest/api/2/license/approximateLicenseCount": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/2/license/approximateLicenseCount/product/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/2/mypreferences": {
+      "produces": [
+        "application/json",
+        "text/plain"
+      ]
+    },
     "GET /rest/api/2/myself": {},
     "GET /rest/api/2/notificationscheme": {},
     "GET /rest/api/2/notificationscheme/project": {},
@@ -355,9 +386,18 @@
     "GET /rest/api/3/issuetypescreenscheme/{}/project": {},
     "GET /rest/api/3/jql/function/computation": {},
     "GET /rest/api/3/label": {},
-    "GET /rest/api/3/license/approximateLicenseCount": {},
-    "GET /rest/api/3/license/approximateLicenseCount/product/{}": {},
-    "GET /rest/api/3/mypreferences": {},
+    "GET /rest/api/3/license/approximateLicenseCount": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/3/license/approximateLicenseCount/product/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/3/mypreferences": {
+      "produces": [
+        "application/json",
+        "text/plain"
+      ]
+    },
     "GET /rest/api/3/myself": {},
     "GET /rest/api/3/notificationscheme": {},
     "GET /rest/api/3/notificationscheme/project": {},
@@ -439,9 +479,13 @@
     "GET /rest/api/3/workflowscheme/{}/workflow": {},
     "GET /rest/api/3/worklog/deleted": {},
     "GET /rest/api/3/worklog/updated": {},
-    "GET /rest/atlassian-connect/1/addons/{}/properties": {},
+    "GET /rest/atlassian-connect/1/addons/{}/properties": {
+      "accept": "unchecked"
+    },
     "GET /rest/atlassian-connect/1/addons/{}/properties/{}": {},
-    "GET /rest/atlassian-connect/1/app/module/dynamic": {},
+    "GET /rest/atlassian-connect/1/app/module/dynamic": {
+      "accept": "unchecked"
+    },
     "GET /rest/atlassian-connect/1/migration/{}/{}/task": {},
     "GET /rest/atlassian-connect/1/service-registry": {
       "consumes": [
@@ -615,8 +659,12 @@
     },
     "POST /rest/api/2/plans/plan": {},
     "POST /rest/api/2/plans/plan/{}/duplicate": {},
-    "POST /rest/api/2/plans/plan/{}/team/atlassian": {},
-    "POST /rest/api/2/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/2/plans/plan/{}/team/atlassian": {
+      "accept": "unchecked"
+    },
+    "POST /rest/api/2/plans/plan/{}/team/planonly": {
+      "accept": "unchecked"
+    },
     "POST /rest/api/2/priority": {
       "consumes": [
         "application/json"
@@ -683,7 +731,9 @@
         "application/json"
       ]
     },
-    "POST /rest/api/2/task/{}/cancel": {},
+    "POST /rest/api/2/task/{}/cancel": {
+      "accept": "unchecked"
+    },
     "POST /rest/api/2/uiModifications": {
       "consumes": [
         "application/json"
@@ -971,8 +1021,12 @@
     },
     "POST /rest/api/3/plans/plan": {},
     "POST /rest/api/3/plans/plan/{}/duplicate": {},
-    "POST /rest/api/3/plans/plan/{}/team/atlassian": {},
-    "POST /rest/api/3/plans/plan/{}/team/planonly": {},
+    "POST /rest/api/3/plans/plan/{}/team/atlassian": {
+      "accept": "unchecked"
+    },
+    "POST /rest/api/3/plans/plan/{}/team/planonly": {
+      "accept": "unchecked"
+    },
     "POST /rest/api/3/priority": {
       "consumes": [
         "application/json"
@@ -1039,7 +1093,9 @@
         "application/json"
       ]
     },
-    "POST /rest/api/3/task/{}/cancel": {},
+    "POST /rest/api/3/task/{}/cancel": {
+      "accept": "unchecked"
+    },
     "POST /rest/api/3/uiModifications": {
       "consumes": [
         "application/json"
@@ -1135,7 +1191,8 @@
     "POST /rest/atlassian-connect/1/app/module/dynamic": {
       "consumes": [
         "application/json"
-      ]
+      ],
+      "accept": "unchecked"
     },
     "POST /rest/atlassian-connect/1/migration/workflow/rule/search": {
       "consumes": [
@@ -1393,20 +1450,27 @@
     "PUT /rest/api/2/plans/plan/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
-    "PUT /rest/api/2/plans/plan/{}/archive": {},
+    "PUT /rest/api/2/plans/plan/{}/archive": {
+      "accept": "unchecked"
+    },
     "PUT /rest/api/2/plans/plan/{}/team/atlassian/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
     "PUT /rest/api/2/plans/plan/{}/team/planonly/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
-    "PUT /rest/api/2/plans/plan/{}/trash": {},
+    "PUT /rest/api/2/plans/plan/{}/trash": {
+      "accept": "unchecked"
+    },
     "PUT /rest/api/2/priority/default": {
       "consumes": [
         "application/json"
@@ -1440,7 +1504,8 @@
     "PUT /rest/api/2/project/{}/email": {
       "consumes": [
         "application/json"
-      ]
+      ],
+      "accept": "unchecked"
     },
     "PUT /rest/api/2/project/{}/features/{}": {
       "consumes": [
@@ -1810,20 +1875,27 @@
     "PUT /rest/api/3/plans/plan/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
-    "PUT /rest/api/3/plans/plan/{}/archive": {},
+    "PUT /rest/api/3/plans/plan/{}/archive": {
+      "accept": "unchecked"
+    },
     "PUT /rest/api/3/plans/plan/{}/team/atlassian/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
     "PUT /rest/api/3/plans/plan/{}/team/planonly/{}": {
       "consumes": [
         "application/json-patch+json"
-      ]
+      ],
+      "accept": "unchecked"
     },
-    "PUT /rest/api/3/plans/plan/{}/trash": {},
+    "PUT /rest/api/3/plans/plan/{}/trash": {
+      "accept": "unchecked"
+    },
     "PUT /rest/api/3/priority/default": {
       "consumes": [
         "application/json"
@@ -1857,7 +1929,8 @@
     "PUT /rest/api/3/project/{}/email": {
       "consumes": [
         "application/json"
-      ]
+      ],
+      "accept": "unchecked"
     },
     "PUT /rest/api/3/project/{}/features/{}": {
       "consumes": [
@@ -2177,9 +2250,15 @@
     "GET /rest/api/2/statuscategory": {},
     "GET /rest/api/2/statuscategory/{}": {},
     "GET /rest/api/2/universal_avatar/type/{}/owner/{}": {},
-    "GET /rest/api/2/universal_avatar/view/type/{}": {},
-    "GET /rest/api/2/universal_avatar/view/type/{}/avatar/{}": {},
-    "GET /rest/api/2/universal_avatar/view/type/{}/owner/{}": {},
+    "GET /rest/api/2/universal_avatar/view/type/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/2/universal_avatar/view/type/{}/avatar/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/2/universal_avatar/view/type/{}/owner/{}": {
+      "accept": "unchecked"
+    },
     "GET /rest/api/2/user": {},
     "GET /rest/api/2/user/assignable/multiProjectSearch": {},
     "GET /rest/api/2/user/assignable/search": {},
@@ -2288,9 +2367,15 @@
     "GET /rest/api/3/statuscategory": {},
     "GET /rest/api/3/statuscategory/{}": {},
     "GET /rest/api/3/universal_avatar/type/{}/owner/{}": {},
-    "GET /rest/api/3/universal_avatar/view/type/{}": {},
-    "GET /rest/api/3/universal_avatar/view/type/{}/avatar/{}": {},
-    "GET /rest/api/3/universal_avatar/view/type/{}/owner/{}": {},
+    "GET /rest/api/3/universal_avatar/view/type/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/3/universal_avatar/view/type/{}/avatar/{}": {
+      "accept": "unchecked"
+    },
+    "GET /rest/api/3/universal_avatar/view/type/{}/owner/{}": {
+      "accept": "unchecked"
+    },
     "GET /rest/api/3/user": {},
     "GET /rest/api/3/user/assignable/multiProjectSearch": {},
     "GET /rest/api/3/user/assignable/search": {},
