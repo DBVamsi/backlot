@@ -140,9 +140,9 @@ ACCEPT_UNCHECKED = _both(
     "GET /rest/atlassian-connect/1/addons/{}/properties",
     *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
 }
-# What the 406 names where it is more than `[application/json]`, of the 1154: `mypreferences`
-# `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it to the 401, and
-# `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+# What the 406 names where it is more than `[application/json]`, of those that answered it:
+# `mypreferences` `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it
+# to the 401, and `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
 PRODUCES = {
     **{
         op: ["application/json", "text/plain"]

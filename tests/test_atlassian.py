@@ -5362,8 +5362,7 @@ _ACCEPT_ROWS = [
     + ({"allow": "HEAD,GET,OPTIONS"},),
     ("POST", "/atlassian/wiki/rest/api/search", "none", _HTML, None, 405, None, b"")
     + ({"allow": "HEAD,GET,OPTIONS"},),
-    # -- Jira and Confluence's Spring services cannot read a header any member of which they cannot
-    # read, wherever it stands (``errors.atlassian.accepts``), but Jira's one exception above
+    # -- a member Jira or a Spring service cannot read (``errors.atlassian.accepts``)
     ("GET", _INFO, "none", "foo, application/json", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json, foo", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json,*.*", None, 406, _EMPTY_HTML, b"", {}),
@@ -5587,7 +5586,7 @@ _JIRA_401 = [
         {"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"},
     ),
     ("OPTIONS", "audio/*", 500, "text/html;charset=utf-8", b"", {}),
-    # a header any member of which Jira cannot read: the 401 with no body, wherever it stands
+    # a member Jira cannot read
     ("OPTIONS", "foo", 401, _EMPTY_HTML, b"", {**_UNREAD_ALLOW, "x-frame-options": None}),
     ("OPTIONS", "*.*", 401, _EMPTY_HTML, b"", {}),
     ("OPTIONS", "*/json", 401, _EMPTY_HTML, b"", {}),
