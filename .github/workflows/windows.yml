@@ -38,7 +38,8 @@ jobs:
         run: >
           uv run --no-sync pytest -rs
           tests/test_cli.py tests/test_server.py tests/test_schema.py tests/test_docs.py
-          tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py tests/test_packaging.py
+          tests/test_importer_byo.py tests/test_importer_erb.py tests/test_acl.py
+          tests/test_fidelity.py tests/test_packaging.py
       - name: The whole suite
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run --no-sync pytest -rs
