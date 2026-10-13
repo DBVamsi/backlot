@@ -560,8 +560,9 @@ def refuse_a_media_type(
       after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it
-    - where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type
-      read without one (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
+
+    Where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type read
+    without one, as `DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py`` records.
 
     A charset is looked up in Python's codec registry rather than Java's, which agree on the ones
     above.
