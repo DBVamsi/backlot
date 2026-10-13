@@ -1087,6 +1087,7 @@ _BATCH_ROWS = [
     (f"{_DRIVE_BATCH}&access_token=nope", ("GET", "/drive/v3/files", None, _ANON), 403, None, None),
     (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files?access_token=nope", None, _ANON), 403, None, None),
     (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files", None, None), 200, None, None),
+    (f"{_DRIVE_BATCH}&access_token=nope", ("GET", "/drive/v3/files", None, "Bearernope"), 401, None, _CHALLENGED),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 302, 403, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 302, 403, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}", None, _ANON), 403, 403, None),
@@ -2573,6 +2574,7 @@ _CREDENTIAL_ROWS = [
 _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x", _CHALLENGED), (None, "access_token=1/x", _CHALLENGED),
     (None, "access_token=1%2Fx", _CHALLENGED), (None, "bearer_token=ya29.x", _CHALLENGED),
+    (None, "access%5Ftoken=ya29.x", _CHALLENGED),
     (None, "oauth_token=ya29.x", _CHALLENGED),
     (None, "access_token={t}", _NONE), (None, "access_token=ya29", _NONE),
     (None, "access_token=YA29.x", _NONE), (None, "access_token=%20ya29.x", _NONE),

@@ -312,27 +312,21 @@ _QUERY_TOKEN_PREFIXES = ("ya29.", "1/")
 
 
 def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | None] | None:
-    """The credential the query names, as `_credential` gives one, or ``None`` where it names none.
+    """The credential the query names, as whether there is one and the token it names, or ``None``
+    where the query names none.
 
     Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
-    names no credential; past the gate the token's value is resolved as it stands, empty naming no
-    token, and so does a token name the query repeats. A part of a batch whose own query carries
-    none of the three names reads the batch's.
+    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
+    a token name the query repeats, names no token. A part of a batch whose own query carries none
+    of the three names reads the batch's.
 
-    Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, with a token that resolves
-    (`<t>`), `ya29.nope` and `nope`, each name alone and each pair in both orders, beside a header
-    of each kind `_credential` sorts headers into. Of a byte sweep of `ya29?x`, `1?x` and `?/x` over
-    the printable ASCII, 282 values, only `ya29.x` and `1/x` were read, as were `1%2Fx` and
-    `ya29%2Ex` sent beside it; `ya29`, `YA29.x`, `4/0x`, a JWT, an API key's shape, `usr-…`, an
-    empty value and `nope` were what no credential gets, as `ACCESS_TOKEN` and `Access_token` were.
-    `access_token=ya29.nope` beside `oauth_token=<t>` was served, `access_token=<t>` beside
-    `oauth_token=nope` was the bad token's 401, and `access_token=nope` beside `oauth_token=<t>` was
-    no credential; `bearer_token` ranked between the two on both counts.
-    `access_token=<t>&access_token=<t>` and `oauth_token=&access_token=<t>` were the 401 that names
-    no token. In a batch, the batch's `access_token=ya29.nope` was a bare part's 401, and the part's
-    own `access_token=nope` kept the batch's `access_token=<t>` out.
+    Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone and each pair
+    in both orders beside each kind of header, with the rows ``tests/test_google.py`` keeps in
+    `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a byte
+    sweep over the printable ASCII found, 282 values with each character after ya29 and after 1 and
+    before a slash, and real read a JWT, an API key and a token of Backlot's shape as none.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
@@ -4771,11 +4765,10 @@ def _drive_batch_redirect(request: Request) -> None:
     is :func:`gerr.download_credential_refused` on a download sent on its own, and on 2026-10-11
     `OAuth nope`, `Bearer nope x`, `Bearer<t>`, `Bearer<TAB>nope` and `Bearer ,nope` were each the
     401 in a part. A token named in the part's query or in the batch's is
-    :func:`gerr.token_in_query` instead of the redirect, after that 401, measured 2026-10-13 with
-    `access_token=nope`, an empty one, `ACCESS_TOKEN` and `bearer_token`. The redirect comes ahead
-    of everything else measured beside it: a file that does not exist, `supportsAllDrives=NOPE`,
-    `fields=bogus`, an absent or empty `mimeType`, a Docs file read with `alt=media`, and a
-    `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
+    :func:`gerr.token_in_query` instead of the redirect, after that 401, measured 2026-10-13. The
+    redirect comes ahead of everything else measured beside it: a file that does not exist,
+    `supportsAllDrives=NOPE`, `fields=bogus`, an absent or empty `mimeType`, a Docs file read with
+    `alt=media`, and a `callback`, which neither wraps the redirect (`cb`) nor refuses it (`a b`).
 
     `Location` is the request's path under `/download`, as sent but for its escapes: measured
     2026-10-05 on `files/a%XXb` for each byte 0x20-0x7E, real decodes an escape of an ASCII letter,

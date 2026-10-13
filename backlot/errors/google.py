@@ -626,19 +626,14 @@ def names_a_query_token(query: Mapping[str, str]) -> bool:
 
 def token_in_query() -> GoogleError:
     """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, whatever the
-    value and whether or not a credential came in the header beside it.
+    value and whether or not a credential came in the header beside it. The names are
+    `QUERY_TOKENS` in any case (:func:`names_a_query_token`); a name that only resembles one is left
+    to the download's other refusals.
 
-    Measured 2026-10-13 on `files.export`: `access_token`, `oauth_token` and `bearer_token` each
-    answered this, spelt in any case (`ACCESS_TOKEN`, `Access_Token`, `BEARER_TOKEN`), with a token
-    that resolves, with `nope` and with an empty value, beside `Authorization: Bearer <token>` and
-    beside `bearer nope`, on a file that does not exist and with no `mimeType` at all. Each came
-    after `$.xgafv` and after a credential the front end refuses (`Bearer nope`, or a query value
-    ``routers.google._query_credential`` reads and cannot resolve), and ahead of a `callback`,
-    `cb` and `a b` alike. `accesstoken`, `access-token`, `token`, `id_token`, `auth_token` and
-    `access_token_x` did not, and an export asking for `alt=json`, which is no download, did not
-    either. `files.get?alt=media` answered it with an empty value and inside a batch; sent on its
-    own with a non-empty value it answered Google's automated-queries page that day, which later
-    turned up for the empty value as well, so the batch's answer stands for it.
+    Measured 2026-10-13 on `files.export`; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS``
+    holds the cases. `files.get?alt=media` answered it with an empty value and inside a batch; sent
+    on its own with a non-empty value it answered Google's automated-queries page that day, which
+    later turned up for the empty value as well, so the batch's answer stands for it.
     """
     return invalid_argument(QUERY_TOKEN_MESSAGE)
 
