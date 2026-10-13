@@ -2459,7 +2459,7 @@ def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
 # `errors.google._UNREGISTERED_CALLER_OPERATIONS` records), and what the admin token gets on the
 # same request, which on an operation Backlot does not serve is the 404 or 405 the path gets with
 # no operation to run (`routers.google.refuse_an_unserved_operation`); None where that answer is
-# not this test's. A code of 405 is the router's, whatever the credential.
+# not this test's. A code of 404 or 405 is the router's, whatever the credential.
 # fmt: off
 _NO_CREDENTIAL_ROWS = [
     ("GET", "/drive/v3/files", 403, 200),
@@ -2501,6 +2501,9 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/gmail/v1/users/me/drafts", 401, 404),
     ("DELETE", "/gmail/v1/users/me/messages/abc123", 401, 405),
     ("POST", "/gmail/v1/users/me/labels", 401, 405),
+    # an escaped slash stays inside its segment (`routers.google._operation_path`)
+    ("GET", "/drive/v3/files/abc%2Fpermissions", 403, 404),
+    ("POST", "/drive/v3/files/{doc}%2Fcopy", 404, 404),
     # no operation Google publishes: the router's 405 whatever the credential, where real answered
     # its front end's HTML 404
     ("PUT", "/gmail/v1/users/me/profile", 405, 405),
@@ -2518,10 +2521,10 @@ def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, 
     url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
     body = _A1_FILTER if method in ("POST", "PATCH") else None
     r = client.request(method, url, json=body)
-    if code == 405:
+    if code in (404, 405):
         for headers in (BAD_TOKEN, admin_h):
-            assert client.request(method, url, json=body, headers=headers).status_code == 405
-        assert r.status_code == 405, r.text
+            assert client.request(method, url, json=body, headers=headers).status_code == code
+        assert r.status_code == code, r.text
         return
     assert r.status_code == code, r.text
     e = _gerr(r)
@@ -2543,10 +2546,9 @@ def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, 
 _SERVED = "served"  # the read's own 200
 _NONE = "none"  # the operation's answer to no credential at all
 
-# An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it on
-# Gmail's `labels.get` and Drive's `files.list`, as ``routers.google._credential`` records: the
-# read's 200, the bad token's 401 under either challenge (`_CHALLENGED`, `_CHALLENGE`), or what no
-# credential gets.
+# An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it
+# on the two reads below, as ``routers.google._credential`` records: the read's 200, the bad token's
+# 401 under either challenge (`_CHALLENGED`, `_CHALLENGE`), or what no credential gets.
 # fmt: off
 _CREDENTIAL_ROWS = [
     ("Bearer {t}", _SERVED), ("OAuth {t}", _SERVED), ("Bearer  {t}", _SERVED),
@@ -2555,7 +2557,7 @@ _CREDENTIAL_ROWS = [
     ("Bearer nope", _CHALLENGED), ("OAuth nope", _CHALLENGED), ("Bearer x {t}", _CHALLENGED), ("Bearer {t};x", _CHALLENGED),
     ('Bearer {t}"', _CHALLENGED), ("Bearer nope x", _CHALLENGED),
     ("Bearer{t}", _CHALLENGE), ("Bearer\t{t}", _CHALLENGE), ("Bearers {t}", _CHALLENGE),
-    ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE),
+    ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE), ("OAuth2 {t}", _CHALLENGE),
     ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
     ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
     ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
@@ -2644,8 +2646,9 @@ _DENIED = "Delegation denied for mia@acme.com"
 _NOT_AN_ADDRESS = "Invalid user id specified in request/Delegation denied"
 
 # A Gmail request per row as a user's token sends it, `{u}` the mailbox the path names: the user,
-# the `userId`, the rest of the path and its query, and the status and message real answered, as
-# ``routers.google._refuse_another_mailbox`` records, None where the message is not a refusal's.
+# the `userId`, the rest of the path and its query, and the status and message real answered (the
+# admin row aside), as ``routers.google._refuse_another_mailbox`` records, None where the message
+# is not a refusal's.
 # fmt: off
 _MAILBOX_ROWS = [
     ("mia", "me", "profile", 200, None),
@@ -2676,7 +2679,7 @@ _MAILBOX_ROWS = [
     ("mia", "someone@example.com", "messages/zzz", 403, _DENIED),
     ("mia", "someone@example.com", "messages?maxResults=0", 403, _DENIED),
     ("mia", "someone@example.com", "messages?pageToken=zzz", 403, _DENIED),
-    # the admin token, a domain-wide-delegated service account, reads any mailbox
+    # the admin token reads any mailbox (`_refuse_another_mailbox` says what it stands for)
     ("admin", "someone@example.com", "profile", 200, None),
 ]
 # fmt: on
@@ -2757,8 +2760,8 @@ _REFUSED = "refused"  # the editor hosts' empty 400 (`errors.google.head_refusal
 # A `HEAD` per row, answered as the `GET` of the same URL (or of the URL in the third column) with
 # the body left off, or refused. The credential is `admin`, `mia` (the scoped token, which can see
 # neither the spreadsheet nor the CFO's message), `bad` or None for no header; the status is the
-# GET's and the `HEAD`'s; the last column is whether the `HEAD` declares a length
-# (`errors.google.head_content_length`).
+# `HEAD`'s, and the GET's too where the row is not refused; the last column is whether the `HEAD`
+# declares a length (`errors.google.head_content_length`).
 # fmt: off
 _HEAD_ROWS = [
     ("/drive/v3/files", "admin", None, 200, False),
@@ -2866,9 +2869,10 @@ def test_google_a_head_is_the_get_without_its_body_or_the_editor_hosts_400(
     assert b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body") == b""
 
 
-# A trailing slash per row, as ``backlot.main.route_a_google_path_the_way_google_does`` records
-# real's answer: the slashed request, the slash-free one it answers as (None where it is the
-# unrouted 404), the credential as in `_HEAD_ROWS`, and the status.
+# A slashed request per row, the spellings measured for
+# ``backlot.main.route_a_google_path_the_way_google_does``: the slashed request, the request it
+# answers as (None where that is the unrouted 404), the credential as in `_HEAD_ROWS`, and the
+# status.
 # fmt: off
 _SLASHED_ROWS = [
     ("GET /drive/v3/files/", "GET /drive/v3/files", "admin", 200),
@@ -2884,12 +2888,15 @@ _SLASHED_ROWS = [
     ("GET /drive/v3/drives/", "GET /drive/v3/drives", "admin", 200),
     ("GET /gmail/v1/users/me/profile/", "GET /gmail/v1/users/me/profile", None, 401),
     ("GET /gmail/v1/users/me/profile//", "GET /gmail/v1/users/me/profile", "admin", 200),
+    ("GET /gmail/v1/users/me/labels//", "GET /gmail/v1/users/me/labels", "admin", 200),
     ("GET /gmail/v1/users/me/labels///", "GET /gmail/v1/users/me/labels", "admin", 200),
     ("GET /gmail/v1/users/me/labels/", "GET /gmail/v1/users/me/labels", "bad", 401),
     ("GET /gmail/v1/users/me/labels/INBOX/", "GET /gmail/v1/users/me/labels/INBOX", "admin", 200),
     ("GET /gmail/v1/users/me/messages/?maxResults=1", "GET /gmail/v1/users/me/messages?maxResults=1", "admin", 200),
     ("GET /gmail/v1/users/me/messages/{comp}/", "GET /gmail/v1/users/me/messages/{comp}", "mia", 404),
+    ("GET /gmail/v1/users/me/messages/{held}/attachments/{att}/", "GET /gmail/v1/users/me/messages/{held}/attachments/{att}", "admin", 200),
     ("GET /gmail/v1/users/me/threads/", "GET /gmail/v1/users/me/threads", "admin", 200),
+    ("GET /gmail/v1/users/me/threads/{comp}/", "GET /gmail/v1/users/me/threads/{comp}", "admin", 200),
     ("GET /sheets/v4/spreadsheets/{sheet}/", "GET /sheets/v4/spreadsheets/{sheet}", "admin", 200),
     ("GET /sheets/v4/spreadsheets/{sheet}//", "GET /sheets/v4/spreadsheets/{sheet}", None, 403),
     ("GET /sheets/v4/spreadsheets/{sheet}/values/A1/", "GET /sheets/v4/spreadsheets/{sheet}/values/A1", "admin", 200),
@@ -2912,14 +2919,20 @@ _SLASHED_ROWS = [
 def test_google_a_trailing_slash_is_not_part_of_the_path(
     client, admin_h, tokens, ro_conn, slashed, slash_free, caller, status
 ):
-    """The rows `_SLASHED_ROWS` records, each answered byte for byte as its slash-free spelling
-    (``backlot.main.route_a_google_path_the_way_google_does``)."""
+    """The rows `_SLASHED_ROWS` records, each answered byte for byte as the request beside it where
+    it has one (``backlot.main.route_a_google_path_the_way_google_does``)."""
+    held = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
+    ).fetchone()["id"]
+    parts = client.get(f"/gmail/v1/users/me/messages/{held}", headers=admin_h).json()["payload"]
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],
         "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "comp": ro_conn.execute(
             "SELECT id FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
         ).fetchone()["id"],
+        "held": held,
+        "att": next(p for p in parts["parts"] if p.get("filename"))["body"]["attachmentId"],
     }
     headers = {
         "admin": admin_h,

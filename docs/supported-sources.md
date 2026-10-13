@@ -194,11 +194,14 @@ the same way. On both listings a `pageToken` that does not parse is real's 400 `
 and an empty one is the first page, refused where each listing refuses it beside `maxResults`
 (`backlot.routers.google._gmail_page`). A credential, a `HEAD` and a trailing slash are answered as
 on Drive, in the section below. A user's token is held to its own mailbox, `me` in any case or its
-own address: another address is real's 403 `Delegation denied for <the caller's own address>`, and a
-`userId` without text on both sides of an `@`, the 403
-`Invalid user id specified in request/Delegation denied`. Both come after a `maxResults` that is not
-a uint32 and ahead of the message id, a `maxResults` of 0 and the `pageToken`; the admin token reads
-any mailbox. Measured against the live Gmail API on 2026-10-11 and 2026-10-12.
+own address: another address is the 403 `Delegation denied for <the caller's own address>`, and a
+`userId` without text on both sides of an `@` the 403
+`Invalid user id specified in request/Delegation denied`, as on real, which also answers the second
+to some shapes with text on both sides (`a@b`, `a@b@c`;
+`backlot.routers.google._refuse_another_mailbox` lists those measured). Both come after a
+`maxResults` that is not a uint32 and ahead of the message id, a `maxResults` of 0 and the
+`pageToken`; the admin token reads any mailbox. Measured against the live Gmail API on 2026-10-11
+and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -367,27 +370,28 @@ tab or a comma ends: `Bearer <t> x` and `Bearer <t>,x` are served, `Bearer<t>` i
 `bearer <t>`, `token <t>`, `Basic …` and a bare `Bearer` are no credential at all. With none, a
 request is answered by its operation rather than its family: an unregistered caller's 403 on an
 operation that takes API keys too (Drive's file and comment reads among them, and the three Sheets
-reads), a missing credential's 401 everywhere else. Each of those 401s carries
-`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
-token that does not resolve. An operation the two Google baselines acknowledge as
-`missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a caller whose
-credential resolves gets the 404 or 405 its path gets. Measured against the live Drive, Gmail,
-Sheets, Docs and Slides APIs on 2026-10-11. A token in the query, `access_token`, `bearer_token` or
-`oauth_token`, is read where no header outranks it, and only when it starts `ya29.` or `1/` as
-Google's own do, so a Backlot token there is no credential, on the real APIs as here
-(`backlot.routers.google._query_credential`); a byte-stream read refuses any of those names, in any
-case, with real's 400 `OAuth token was passed in the query parameter…`. Measured against the live
-Drive and Gmail APIs on 2026-10-13.
+reads), a missing credential's 401 on the rest, and the missing API key's 403 on a download. Each of
+those 401s carries `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with
+`error="invalid_token"` for a token that does not resolve. An operation the two Google baselines
+acknowledge as `missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a
+caller whose credential resolves gets the 404 or 405 its path gets. Measured against the live Drive,
+Gmail, Sheets, Docs and Slides APIs on 2026-10-11. A token in the query, `access_token`,
+`bearer_token` or `oauth_token`, is read where no header outranks it, and only when it starts
+`ya29.` or `1/` as Google's own do, so a Backlot token there is no credential, on the real APIs as
+here (`backlot.routers.google._query_credential`); a byte-stream read refuses any of those names, in
+any case, with real's 400 `OAuth token was passed in the query parameter…`. Measured against the
+live Drive and Gmail APIs on 2026-10-13.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
 every other answer declares none, as real's chunked answers do. `callback` does not reach a `HEAD`
 but as the 503 a download answers beside an uncallable name. A `HEAD` on Docs, Sheets or Slides is
 the host's 400 with an empty `text/html; charset=utf-8` body, ahead of the credential and of
-`$.xgafv`. Trailing slashes are not part of a path on any of the five families — `files/`,
-`labels///` and `spreadsheets/{id}/` each answer what the path without them answers — while a
-doubled slash mid-path is kept, as a segment no route matches. Measured against the live Drive,
-Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
+`$.xgafv`; real Sheets answers some `HEAD`s with its HTML 404 page instead, which is not modelled
+(`backlot.errors.google.head_refusal`). Trailing slashes are not part of a path on any of the five
+families — `files/`, `labels///` and `spreadsheets/{id}/` each answer what the path without them
+answers — while a doubled slash mid-path is kept, as a segment no route matches. Measured against
+the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
 
 ### HubSpot — `/hubspot/crm/v3` `/hubspot/crm/v4`
 
