@@ -166,10 +166,6 @@ extend-exclude = ["*.md"]
 # formatter keeps code inside the limit, and what stays over it is long string literals and
 # measured-behaviour comment tables.
 select = ["E4", "E7", "E9", "F", "I"]
-# For PLW1514 below, which ruff 0.15 still keeps in preview; explicit-preview-rules keeps the
-# prefixes above from pulling in the rest of the preview set with it.
-preview = true
-explicit-preview-rules = true
 # I never fights the E402 ignore below: isort sorts within a run of consecutive imports and never
 # lifts one over a statement, so the sys.path guards in the examples and scripts/gen_docs.py, and
 # the tests' imports below a module-level `importorskip` or a mid-file section break, all stay
@@ -191,12 +187,6 @@ extend-select = [
     "S609",  # a wildcard in a shell command
     "S611",  # RawSQL
     "S612",  # logging.config.listen
-    # Every file Backlot ships, writes and reads back is UTF-8, and a text-mode open() or
-    # Path.read_text()/write_text() without encoding= takes the platform's instead: cp1252 on a
-    # Western Windows, where the bundled schemas then fail to decode before any command runs.
-    # Catches the calls whose receiver ruff can type; the EncodingWarning filter under pytest
-    # below catches the rest at run time.
-    "PLW1514",  # open() and friends without encoding=
 ]
 
 [tool.pytest.ini_options]
@@ -211,10 +201,15 @@ filterwarnings = [
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
     # A text file opened without encoding= fails the test that opened it — in this package, the
-    # tests and the scripts, not in a dependency. Python emits the warning only under
-    # PYTHONWARNDEFAULTENCODING=1 (or -X warn_default_encoding), which CI sets; see PLW1514 under
-    # ruff above for why.
+    # tests and the scripts, not in a dependency. Every file Backlot ships, writes and reads back
+    # is UTF-8, and such an open takes the locale's code page instead (cp1252 on windows-latest,
+    # where the bundled Slack schema then fails to decode before any command runs). Python emits
+    # the warning only under PYTHONWARNDEFAULTENCODING=1 (or -X warn_default_encoding), which CI
+    # sets; ruff's PLW1514, run on its own in CI, refuses the calls whose receiver it can type.
     "error::EncodingWarning:backlot|tests|scripts",
+]
+markers = [
+    "windows: a test the Windows workflow runs on every pull request it runs on, for a failure Windows had",
 ]
 
 [tool.setuptools_scm]
