@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import re
 import uuid
@@ -6,6 +7,7 @@ from urllib.parse import urlparse
 import pytest
 
 from backlot import synth
+from backlot.graphql import fireflies_resolvers
 
 DOC = "dsid_00908a2dda4b4d359194a091019e8367"
 DOC2 = "dsid_f9591843028149bdb47f7c3a70b3baa1"
@@ -38,12 +40,42 @@ def test_channel_id_stable_per_name():
     assert synth.slack_channel_id("general").startswith("C")
 
 
-def test_time_formats():
-    ts = 1712343600  # 2024-04-05T19:00:00Z
-    assert synth.rfc3339(ts) == "2024-04-05T19:00:00Z"
-    assert synth.rfc3339_millis(ts) == "2024-04-05T19:00:00.000Z"
-    assert synth.jira_datetime(ts).endswith("+0000")
-    assert synth.rfc2822(ts).endswith("+0000")
+class _WindowsDatetime(datetime.datetime):
+    """`datetime` with Windows' `fromtimestamp`: -1 renders and a second below it raises
+    OSError [Errno 22] (`backlot.synth.utc_datetime` has the measurement)."""
+
+    @classmethod
+    def fromtimestamp(cls, t, tz=None):
+        if t < -1:
+            raise OSError(22, "Invalid argument")
+        return super().fromtimestamp(t, tz)
+
+
+@pytest.mark.parametrize(
+    "render, ts, expected",
+    [
+        (synth.rfc3339, 1712343600, "2024-04-05T19:00:00Z"),
+        (synth.rfc3339_millis, 1712343600, "2024-04-05T19:00:00.000Z"),
+        (synth.jira_datetime, 1712343600, "2024-04-05T19:00:00.000+0000"),
+        (synth.rfc2822, 1712343600, "Fri, 05 Apr 2024 19:00:00 +0000"),
+        (synth.s3_http_date, 1712343600, "Fri, 05 Apr 2024 19:00:00 GMT"),
+        (fireflies_resolvers._iso, 1712343600, "2024-04-05T19:00:00Z"),
+        (synth.rfc3339, -1, "1969-12-31T23:59:59Z"),
+        (synth.rfc3339, -86400, "1969-12-31T00:00:00Z"),
+        (synth.rfc3339_millis, -86400, "1969-12-31T00:00:00.000Z"),
+        (synth.jira_datetime, -86400, "1969-12-31T00:00:00.000+0000"),
+        (synth.rfc2822, -2208988800, "Mon, 01 Jan 1900 00:00:00 +0000"),
+        (synth.s3_http_date, -2208988800, "Mon, 01 Jan 1900 00:00:00 GMT"),
+        (fireflies_resolvers._iso, -86400, "1969-12-31T00:00:00Z"),
+    ],
+)
+def test_time_formats(render, ts, expected, monkeypatch):
+    """Each format a route writes a corpus time in, pre-1970 seconds among them, with
+    `datetime.fromtimestamp` behaving as it does on Windows wherever these modules could reach it,
+    so the rows hold on that platform too."""
+    monkeypatch.setattr(synth, "datetime", _WindowsDatetime)
+    monkeypatch.setattr(datetime, "datetime", _WindowsDatetime)
+    assert render(ts) == expected
 
 
 def test_account_id_and_login():
