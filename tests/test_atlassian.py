@@ -4139,6 +4139,10 @@ def test_atlassian_headers_ride_every_answer_but_the_front_doors(client, admin_h
         if refused is not None:
             status, layer = refused
             assert r.status_code == status, (label, r.text)
+            # the page the layer serves, byte for byte (`errors.atlassian.front_door`)
+            page = errors_atlassian.front_door(method, path, "")
+            assert r.headers["content-type"] == page.media_type, label
+            assert r.text == page.body, label
             assert "allow" not in r.headers, label
             for name in ("atl-request-id", "atl-traceid"):
                 assert (name in r.headers) == (layer == "gateway"), (label, name)
@@ -4711,3 +4715,273 @@ def test_confluence_search_carries_the_cache_pair_where_real_does(
         assert r.headers["expires"] == "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
         assert "cache-control" not in r.headers and "expires" not in r.headers
+
+
+# --- the front door's own refusals: a page before either product ----------------------------
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,status,layer",
+    [
+        # the firewall's 403 page for a script tag and a step up a directory; a tag in a query
+        # parameter reaches the route instead (`errors.atlassian.waf_blocks`)
+        ("GET", "/rest/api/3/nope<script>", 403, "cdn edge"),
+        ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, "cdn edge"),
+        ("GET", "/rest/api/3/nope<svg>", 403, "cdn edge"),
+        ("GET", "/rest/api/3/nope..%2F..%2Fetc%2Fpasswd", 403, "cdn edge"),
+        ("GET", "/wiki/rest/api/space/A<script>", 403, "cdn edge"),
+        # a NUL anywhere in the path is the CDN's 400, ahead of the method and the firewall
+        ("GET", "/rest/api/3/nope%00", 400, "cdn"),
+        ("TRACE", "/rest/api/3/nope%00", 400, "cdn"),
+        # Confluence's Tomcat refuses an encoded slash anywhere under `/wiki/`, its 400 page
+        # (`test_jira_decodes_an_encoded_slash_where_confluence_refuses_it` covers Jira's opposite)
+        ("GET", "/wiki/rest/api/nope%2Fthing", 400, "gateway"),
+        ("GET", "/wiki/rest/api/space/NO%2FSUCH", 400, "gateway"),
+        ("GET", "/wiki/rest/api/space%2F", 400, "gateway"),
+        ("POST", "/wiki/rest/api/space/NO%2FSUCH", 400, "gateway"),
+    ],
+)
+def test_atlassian_front_door_refuses_a_path_before_either_product(
+    client, admin_h, method, vendor_path, status, layer
+):
+    """Each row's page, its media type and which layer are ``errors.atlassian.front_door``'s, which
+    carries the measurement; the status is what a client's error path meets on real, not here.
+
+    The credential does not change which layer answers, so an admin request is enough to show a
+    served route does not reach its handler."""
+    page = errors_atlassian.front_door(method, f"/atlassian{vendor_path}", "")
+    assert page is not None and page.layer == layer
+    r = _spelled(client, method).request("GET", f"/atlassian{vendor_path}", headers=admin_h)
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == page.media_type
+    # the CloudFront page carries a request id seeded from the raw path, which the client
+    # percent-encodes before the server sees it; comparing the page with that line normalised keeps
+    # the assertion on the template and the reason, which do not depend on the spelling
+    id_line = re.compile(r"Request ID: \S+")
+    assert id_line.sub("", r.text) == id_line.sub("", page.body)
+    assert "allow" not in r.headers
+
+
+@pytest.mark.parametrize(
+    "vendor_path,served",
+    [
+        ("/rest/api/3/nope<svgx>", True),  # `svg` prefix is refused
+        ("/rest/api/3/nope<img>", False),  # a tag the firewall does not name reaches the route
+        ("/rest/api/3/serverInfo?q=<script>", False),  # a tag in the query is served
+        ("/wiki/rest/api/nope%2Fthing", True),  # the encoded slash, Tomcat's 400
+    ],
+)
+def test_atlassian_front_door_serves_what_it_does_not_refuse(client, admin_h, vendor_path, served):
+    """The firewall's boundary: a `svg`-prefixed tag and an encoded slash are refused, a tag it does
+    not name and a tag in a query parameter reach the route (a no-endpoint 404 or a 200). Without
+    this the refusals above could be a blanket 403 on the prefix (`errors.atlassian.waf_blocks`)."""
+    before = errors_atlassian.front_door("GET", f"/atlassian{vendor_path.split('?')[0]}", "")
+    r = client.get(f"/atlassian{vendor_path}", headers=admin_h)
+    if served:
+        assert r.status_code in (400, 403) and (before is not None), vendor_path
+    else:
+        assert before is None, vendor_path
+        assert r.status_code in (200, 404), (vendor_path, r.status_code)
+
+
+def test_jira_decodes_an_encoded_slash_where_confluence_refuses_it(client, admin_h):
+    """Jira routes `issue/A%2FB` as `issue/A/B` and answers the issue's 404, where Confluence's
+    Tomcat refuses the same spelling with its 400 page (`errors.atlassian.front_door`). The two sit
+    in the same request shape and part only by product."""
+    jira = client.get("/atlassian/rest/api/3/issue/A%2FB", headers=admin_h)
+    assert jira.status_code == 404
+    assert jira.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+    conf = client.get("/atlassian/wiki/rest/api/content/1%2F2", headers=admin_h)
+    assert conf.status_code == 400
+    assert conf.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
+
+
+def test_atlassian_front_door_page_is_served_as_a_head(client, admin_h):
+    """A `HEAD` on a refused path is the page's status and length with no body, as real answers one:
+    the `content-length` is the `GET` page's byte count."""
+    get = _spelled(client, "GET").request(
+        "GET", "/atlassian/rest/api/3/nope<script>", headers=admin_h
+    )
+    head = _spelled(client, "HEAD").request(
+        "GET", "/atlassian/rest/api/3/nope<script>", headers=admin_h
+    )
+    assert head.status_code == 403 and head.content == b""
+    assert head.headers["content-length"] == str(len(get.content))
+
+
+# --- a write on a served path: the operation's own answer, not a 405 -------------------------
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,body,status",
+    [
+        # an issue write is the issue's 404, and with no body the 415 the operation's media-type
+        # check gives first; a route here takes only GET, so the method reaches `unmatched_path`
+        # (`backlot.data.jira_unserved` carries the measurement)
+        ("DELETE", "/rest/api/3/issue/NOPE-999999", "{}", 404),
+        ("DELETE", "/rest/api/2/issue/NOPE-999999", "{}", 404),
+        ("PUT", "/rest/api/3/issue/NOPE-999999", "{}", 404),
+        ("PUT", "/rest/api/3/issue/NOPE-999999", None, 415),
+        ("POST", "/rest/api/3/issue/NOPE-999999/comment", "{}", 404),
+        ("POST", "/rest/api/3/issue/NOPE-999999/comment", None, 415),
+        # a project role write at a key that names nothing is the project's 404
+        ("POST", "/rest/api/3/project/NOPESUCHZZ/role/999", "{}", 404),
+        ("PUT", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 415),
+        ("DELETE", "/rest/api/3/project/NOPESUCHZZ/role/999", None, 404),
+    ],
+)
+def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
+    client, method, vendor_path, body, status
+):
+    """The same path's `GET` is served (the `test_admin_*` crawls exercise it); the write differs
+    only by method and reaches the operation real reaches, not the 405 Starlette would give for a
+    method the route does not declare. That a wrong method without a published operation stays the
+    405 is `test_jira_write_on_a_served_path_is_a_405_without_the_published_operation`. No
+    credential."""
+    kwargs = {"content": body, "headers": {"Content-Type": "application/json"}} if body else {}
+    r = client.request(method, f"/atlassian{vendor_path}", **kwargs)
+    assert r.status_code == status, r.text
+    if status == 415:
+        assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
+        assert r.json()["detail"] == "Content-Type 'null' is not supported."
+    else:
+        assert "errors" in r.json()  # Backlot's envelope; real's two members are a separate gap
+
+
+def test_jira_write_on_a_served_path_is_a_405_without_the_published_operation(client):
+    """The mutation control: an issue's `PATCH` has no published operation behind it, so it stays
+    the front door's refusal (a gateway 400), where `PUT` and `DELETE` reach the issue 404. This is
+    what keeps `_published_answer` from turning every wrong method into the operation's answer."""
+    r = client.request(
+        "PATCH",
+        "/atlassian/rest/api/3/issue/NOPE-999999",
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 400  # the gateway's `PATCH`, not a 404
+
+
+def test_jira_picks_the_most_specific_published_operation(client):
+    """A JSON body on `PUT /rest/api/3/issue/archive` stays the 405 Backlot serves no write for,
+    where resolving the shared shape to `issue/{key}` would hand a key `archive` its issue 404. The
+    rule that keeps them apart is `_jira_operation`; real runs the archive write (a 400), which is
+    the gap the baseline acknowledges."""
+    r = client.request(
+        "PUT",
+        "/atlassian/rest/api/3/issue/archive",
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 405  # the archive operation's gap, not the issue 404 of `issue/{key}`
+
+
+@pytest.mark.parametrize(
+    "method,vendor_path,ctype,status",
+    [
+        # a Confluence operation at a served route's path, refused for a caller with no credential
+        # it resolves; the attachment writes check a multipart body first (415 for another type)
+        ("DELETE", "/wiki/rest/api/space/abc123", None, 403),
+        ("POST", "/wiki/rest/api/content/abc123/label", "application/json", 403),
+        ("PUT", "/wiki/rest/api/content/abc123/state", "application/json", 403),
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", "application/json", 415),
+        ("POST", "/wiki/rest/api/space/abc123/permission", "text/plain", 415),
+        ("POST", "/wiki/rest/api/space/abc123/permission", "application/json", 403),
+        ("POST", "/wiki/rest/api/content/archive", None, 403),
+    ],
+)
+def test_confluence_refuses_a_write_on_a_served_path_for_an_anonymous_caller(
+    client, method, vendor_path, ctype, status
+):
+    """Real reaches the operation before the route here does and refuses a caller with no credential
+    on each; the attachment writes answer a 415 for a type they do not take first. The control is
+    the same path's served `GET`, crawled by `test_admin_confluence_crawls_all`."""
+    headers = {"Content-Type": ctype} if ctype else {}
+    r = client.request(
+        method, f"/atlassian{vendor_path}", content=b"x" if ctype else None, headers=headers
+    )
+    assert r.status_code == status, r.text
+    if status == 415:
+        assert r.json()["errors"][0]["code"] == "UNSUPPORTED_MEDIA_TYPE"
+
+
+def test_confluence_write_media_check_reads_the_type(client):
+    """The attachment write takes `multipart/form-data` and nothing else, so a `text/plain` body is
+    its 415 and a multipart one passes to the caller refusal (403). Pins that `_CONFLUENCE_CONSUMES`
+    reads the type rather than refusing every body."""
+    plain = client.post(
+        "/atlassian/wiki/rest/api/content/abc/child/attachment",
+        content=b"x",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert plain.status_code == 415 and plain.json()["errors"][0]["status"] == 415
+    multi = client.post(
+        "/atlassian/wiki/rest/api/content/abc/child/attachment",
+        content=b"x",
+        headers={"Content-Type": "multipart/form-data; boundary=x"},
+    )
+    assert multi.status_code == 403
+
+
+# --- a bearer with a space in its token is read as no credential -----------------------------
+
+
+@pytest.mark.parametrize(
+    "token,read",
+    [
+        ("a b", False),  # a space in the token: not read, served anonymously
+        ("a  b", False),
+        ("a b c", False),
+        ("a\tb", True),  # a tab, a comma, a dot: read, then refused as a Connect token
+        ("a,b", True),
+        ("a.b", True),
+    ],
+)
+def test_jira_does_not_read_a_bearer_whose_token_holds_a_space(client, token, read):
+    """A space is the one separator the gateway will not read past, where a tab or a comma is read
+    and then refused as a Connect token (``backlot.auth.atlassian_bearer_token`` carries the
+    measurement). A served bearer reads anonymously; a read-and-refused one is the Connect-token
+    403."""
+    r = client.get("/atlassian/rest/api/3/serverInfo", headers={"Authorization": f"Bearer {token}"})
+    if read:
+        assert r.status_code == 403
+        assert r.json() == {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE}
+    else:
+        assert r.status_code == 200
+        assert r.json()["baseUrl"]
+
+
+# --- the generator sorts run operations and names the measured media-type exceptions ----------
+
+
+def test_jira_unserved_run_entries_carry_their_consumes():
+    """``backlot/data/jira_unserved.json`` lists the media types a run operation checks, the same as
+    a refused one, so the catch-all answers its 415 for a body it will not take. Pins that `run` is
+    an object with entries, not the bare list it was before this change."""
+    import backlot
+
+    table = json.loads(
+        (Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json").read_text()
+    )
+    assert isinstance(table["run"], dict)
+    assert table["run"]["POST /rest/api/3/field"]["consumes"] == ["application/json"]
+    columns = table["run"]["PUT /rest/api/3/filter/{}/columns"]
+    assert columns["charset"] == "UTF-8"  # its 415 names a charset the request did not send
+
+
+def test_jira_columns_415_names_a_charset_the_request_did_not_send(client):
+    """`filter/{}/columns` answers a `text/plain` body with `text/plain;charset=UTF-8` in `detail`,
+    a charset it adds where the request sent none and keeps one the request carried
+    (:data:`_JIRA_CONSUMES` carries the measurement)."""
+    added = client.put(
+        "/atlassian/rest/api/3/filter/999/columns",
+        content=b"x",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert added.status_code == 415
+    assert added.json()["detail"] == "Content-Type 'text/plain;charset=UTF-8' is not supported."
+    kept = client.put(
+        "/atlassian/rest/api/3/filter/999/columns",
+        content=b"x",
+        headers={"Content-Type": "text/plain;charset=ISO-8859-1"},
+    )
+    assert kept.json()["detail"] == "Content-Type 'text/plain;charset=ISO-8859-1' is not supported."

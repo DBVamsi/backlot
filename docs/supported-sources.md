@@ -405,12 +405,16 @@ length but on Jira's 401 to an unauthenticated caller, which is where Jira parts
 `DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
 gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
 Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
-other method it does not pass on is its 403 or 400 by how the method is spelled. A path no route
-serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at
-an operation it publishes and no route here serves, a `Content-Type` the operation does not take is
-its 415 for any caller the gateway lets through, and after that a caller with no credential gets
-Jira's 401 `Client must be authenticated to access this resource.` where the operation will not run
-anonymously (`backlot/data/jira_unserved.json`), and otherwise that 404, the gap the baseline
+other method it does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns
+back a path that carries a script tag or a directory step with a 403, and one with a `%00` byte with
+a 400, each its own page; an encoded slash under `/wiki/` is Confluence's own 400, where Jira takes
+it apart and routes what it decodes to. A path no route serves is RFC 7807 at 404 with
+`No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at an operation it publishes and
+no route here serves — reached by a path with no route or by a method a served route does not take —
+a `Content-Type` the operation does not take is its 415 for any caller the gateway lets through, and
+after that a caller with no credential gets Jira's 401 where the operation will not run anonymously
+(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
+project's 404 for a key that names nothing, and the no-route 404 is the gap the baseline
 acknowledges. That is under `/atlassian/rest` only: outside the two API mounts the site is its web
 app, `/browse` at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found
 page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`,

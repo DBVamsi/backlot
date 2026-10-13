@@ -611,6 +611,42 @@ async def report_failed_jira_login(request: Request, call_next):
 
 
 @app.middleware("http")
+async def answer_at_the_atlassian_front_door(request: Request, call_next):
+    """Answer an `/atlassian` request the way a layer in front of Jira and Confluence does, where
+    one answers it: the CDN, its firewall, the gateway and Confluence's Tomcat, each with its own
+    page (which, and in what order, is ``errors.atlassian.front_door``).
+
+    Registered after the slash rewrite, the Connect-token refusal, the `HEAD` rewrite and the
+    Seraph header, so it runs ahead of each of them: a `HEAD` arrives here as a `HEAD` (real
+    declares each page's length on one and sends no body), and none of the other three runs for a
+    request this refuses, as none of them runs on real. The path is read as it arrived, from
+    `raw_path`, where an encoded slash and `%00` are still distinguishable from the characters they
+    decode to. Which layer answered is left on the scope for
+    ``backlot.routers.atlassian.vendor_headers``.
+    """
+    # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no
+    # path verbatim (the CloudFront id is a hash of it, the rest are static), so the decoded form is
+    # safe here where `front_door` itself reads `raw_path`
+    if not errors.atlassian.owns(request.url.path):
+        return await call_next(request)
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    answer = errors.atlassian.front_door(
+        request.method,
+        raw_path.decode("latin-1"),
+        request.scope.get("query_string", b"").decode("latin-1"),
+    )
+    if answer is None:
+        return await call_next(request)
+    request.scope["atlassian_front_door"] = answer.layer
+    body = answer.body.encode()
+    headers = {"Content-Type": answer.media_type, **answer.headers}
+    if request.method == "HEAD":
+        headers["Content-Length"] = str(len(body))
+        body = b""
+    return Response(body, status_code=answer.status, headers=headers)
+
+
+@app.middleware("http")
 async def report_atlassian_headers(request: Request, call_next):
     """Put on every `/atlassian` answer the headers real sends beside the body: which ones, on
     which answers, and what each is measured from is ``backlot.routers.atlassian.vendor_headers``.

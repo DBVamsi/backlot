@@ -18,10 +18,15 @@ what that URL answers rather than what this module would otherwise send.
 
 from __future__ import annotations
 
+import base64
 import codecs
+import hashlib
+import html
 import http
 import json
 import re
+from typing import NamedTuple
+from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
 from fastapi import HTTPException
@@ -525,7 +530,12 @@ def _has_body(headers) -> bool:
 
 
 def refuse_a_media_type(
-    path: str, headers, consumes: tuple[str, ...], *, body_optional: bool = False
+    path: str,
+    headers,
+    consumes: tuple[str, ...],
+    *,
+    body_optional: bool = False,
+    charset: str | None = None,
 ) -> AtlassianError | None:
     """Jira's 415 for a request whose `Content-Type` an operation that ``consumes`` those types does
     not take, or None where it takes it.
@@ -549,6 +559,8 @@ def refuse_a_media_type(
       after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it
+    - where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type
+      read without one (``scripts/gen_jira_unserved.py`` names the operations, measured 2026-10-12)
 
     A charset is looked up in Python's codec registry rather than Java's, which agree on the ones
     above.
@@ -564,11 +576,13 @@ def refuse_a_media_type(
         media_type = _parse_media_type(value)
         if media_type is not None and _takes(consumes, media_type):
             return None
-        detail = (
-            "Could not parse Content-Type."
-            if media_type is None
-            else f"Content-Type '{media_type}' is not supported."
-        )
+        if media_type is None:
+            detail = "Could not parse Content-Type."
+        else:
+            names = [p.split("=", 1)[0].lower() for p in media_type.split(";")[1:]]
+            if charset is not None and "charset" not in names:
+                media_type = f"{media_type};charset={charset}"
+            detail = f"Content-Type '{media_type}' is not supported."
     return AtlassianError(
         415,
         {
@@ -580,6 +594,39 @@ def refuse_a_media_type(
         },
         media_type=PROBLEM_JSON,
         headers={"Accept": ", ".join(consumes)},
+    )
+
+
+def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
+    """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
+    types does not take, or None where it takes it.
+
+    Spring's `errors` list, the shape of :func:`method_not_allowed`'s Confluence 405, with no
+    `Accept`. Measured 2026-10-12 on the attachment writes and `POST space/{key}/permission`: an
+    absent or empty `Content-Type` is named `''`, a type is named as :func:`_parse_media_type` reads
+    it (`APPLICATION/JSON` as `application/json`, `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters
+    kept), and a value with no `/` (`foo`) is refused as no type at all. A value Spring cannot read
+    for another reason is named as sent, the one case the sweep did not cover.
+    """
+    value = headers.get("content-type") or ""
+    media_type = _parse_media_type(value) if value else None
+    if media_type is not None and _takes(consumes, media_type):
+        return None
+    if value and "/" not in value:
+        reason = f"Invalid mime type \"{value}\": does not contain '/'"
+    else:
+        reason = f"Content type '{media_type or value}' not supported"
+    return AtlassianError(
+        415,
+        {
+            "errors": [
+                {
+                    "status": 415,
+                    "code": "UNSUPPORTED_MEDIA_TYPE",
+                    "title": f"org.springframework.web.HttpMediaTypeNotSupportedException: {reason}",
+                }
+            ]
+        },
     )
 
 
@@ -765,23 +812,20 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     so that read raises against Backlot and works against real Confluence.
 
     ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
-    Confluence side, nor for a method a layer in front of the application refuses, on a served route
-    or not (:data:`SERVED_METHODS`). Starlette would compute one there from the catch-all
+    Confluence side. Starlette would compute one there from the catch-all
     (``backlot.routers.atlassian.unmatched_path``), which takes every method it lists on every path
     it owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
-    The front door answers Jira's `PATCH` with 400, and a method the CDN refuses by its spelling
-    with 403 or 400, rather than 405 (:data:`SERVED_METHODS`), which :func:`_refused_status`
-    carries.
+    A method outside :data:`SERVED_METHODS` never arrives here: a layer in front of the application
+    answers it first (:func:`front_door`).
     """
-    status = _refused_status(path, method)
     if is_confluence(path):
         return AtlassianError(
-            status,
+            405,
             {
                 "errors": [
                     {
-                        "status": status,
-                        "code": http.HTTPStatus(status).name,
+                        "status": 405,
+                        "code": "METHOD_NOT_ALLOWED",
                         "title": (
                             "org.springframework.web.HttpRequestMethodNotSupportedException: "
                             f"Request method '{method}' not supported"
@@ -791,13 +835,13 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
             },
             headers={},
         )
-    allow = jira_allow(path) if method in SERVED_METHODS else None
+    allow = jira_allow(path)
     return AtlassianError(
-        status,
+        405,
         {
             "type": "about:blank",
-            "title": http.HTTPStatus(status).phrase,
-            "status": status,
+            "title": "Method Not Allowed",
+            "status": 405,
             "detail": f"Method '{method}' is not supported.",
             "instance": _instance(path),
         },
@@ -854,11 +898,10 @@ def jira_options_allow(path: str) -> str | None:
 #: (`server: AtlassianEdge`) answers a `PATCH` — Jira's nginx with 400 on `nopesuchroute`,
 #: `serverInfo` and an issue, Confluence's openresty with 405 on `space` and `nopesuchroute` — and
 #: puts its two ids, `nosniff` and `x-xss-protection` on that refusal and none of the application's
-#: headers (:data:`GATEWAY_REFUSED`). So a method outside this set gets no vendor `Allow` below and
-#: none of the application's headers in ``backlot.routers.atlassian.vendor_headers``; the body it
-#: gets here is still this module's JSON, where real's is that HTML page. Over `backlot.serve()`,
-#: uvicorn's parser answers a method it has no name for (`FOO`, `get`) with its own 400 before the
-#: application sees it; the ones it names (`CONNECT`, `PROPFIND`, `MKACTIVITY`) reach the rule here.
+#: headers (:data:`GATEWAY_REFUSED`). Each layer's page is :func:`front_door`'s. Over
+#: `backlot.serve()`, uvicorn's parser answers a method it has no name for (`FOO`, `get`) with its
+#: own 400 before the application sees it; the ones it names (`CONNECT`, `PROPFIND`, `MKACTIVITY`)
+#: reach the rule here.
 SERVED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD")
 
 #: The methods the gateway refuses itself, rather than the CDN in front of it.
@@ -876,14 +919,190 @@ def cdn_forbids(method: str) -> bool:
     return method not in CDN_405 and _CDN_403_SPELLING.fullmatch(method) is not None
 
 
-def _refused_status(path: str, method: str) -> int:
-    """The status of the refusal for ``method``: the application's 405 for one it sees, and the
-    front door's for one it does not, as :data:`SERVED_METHODS` measures them."""
-    if method in SERVED_METHODS or method in CDN_405:
-        return 405
+#: The page the CDN answers each of its refusals with, `text/html` with no charset, measured
+#: 2026-10-12 on 44 of them: the status in `<H1>`, one line saying why (:data:`CDN_BAD_REQUEST`,
+#: :data:`CDN_METHOD_FORBIDDEN` or :data:`CDN_BLOCKED`), and a request id that is the response's
+#: own `x-amz-cf-id`, 54 characters of the URL-safe base64 alphabet and `==` on every one.
+_CLOUDFRONT_PAGE = (
+    '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" '
+    '"http://www.w3.org/TR/html4/loose.dtd">\n'
+    '<HTML><HEAD><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=iso-8859-1">\n'
+    "<TITLE>ERROR: The request could not be satisfied</TITLE>\n"
+    "</HEAD><BODY>\n"
+    "<H1>{status} ERROR</H1>\n"
+    "<H2>The request could not be satisfied.</H2>\n"
+    '<HR noshade size="1px">\n'
+    "{reason}\n"
+    "We can't connect to the server for this app or website at this time. There might be too much "
+    "traffic or a configuration error. Try again later, or contact the app or website owner.\n"
+    '<BR clear="all">\n'
+    "If you provide content to customers through CloudFront, you can find steps to troubleshoot "
+    "and help prevent this error by reviewing the CloudFront documentation.\n"
+    '<BR clear="all">\n'
+    '<HR noshade size="1px">\n'
+    "<PRE>\n"
+    "Generated by cloudfront (CloudFront)\n"
+    "Request ID: {request_id}\n"
+    "</PRE>\n"
+    "<ADDRESS>\n"
+    "</ADDRESS>\n"
+    "</BODY></HTML>"
+)
+#: Why the CDN refuses `TRACE` and `CONNECT` with 405, a method spelled outside the 403's rule with
+#: 400, and a path carrying `%00` with 400.
+CDN_BAD_REQUEST = "Bad request."
+#: Why it refuses a method by the 403's spelling (:func:`cdn_forbids`).
+CDN_METHOD_FORBIDDEN = (
+    "This distribution is not configured to allow the HTTP request method that was used for this "
+    "request. The distribution supports only cachable requests."
+)
+#: Why its firewall refuses a path (:func:`waf_blocks`).
+CDN_BLOCKED = "Request blocked."
+
+#: What the gateway answers a `PATCH` with: Jira's nginx page and Confluence's openresty one, each
+#: `text/html` with no charset and CRLF line ends, measured 2026-10-12.
+_GATEWAY_PATCH_PAGE = (
+    "<html>\r\n<head><title>{status} {phrase}</title></head>\r\n<body>\r\n"
+    "<center><h1>{status} {phrase}</h1></center>\r\n<hr><center>{server}</center>\r\n"
+    "</body>\r\n</html>\r\n"
+)
+
+#: Tomcat's page for a Confluence path carrying an encoded slash, on `text/html;charset=utf-8` with
+#: `Content-Language: en`, measured 2026-10-12 (:func:`front_door`).
+TOMCAT_BAD_REQUEST = (
+    '<!doctype html><html lang="en"><head><title>HTTP Status 400 – Bad Request</title>'
+    '<style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b '
+    "{color:white;background-color:#525D76;} h1 {font-size:22px;} h2 {font-size:16px;} h3 "
+    "{font-size:14px;} p {font-size:12px;} a {color:black;} .line {height:1px;"
+    "background-color:#525D76;border:none;}</style></head><body><h1>HTTP Status 400 – Bad Request"
+    "</h1></body></html>"
+)
+TOMCAT_MEDIA_TYPE = "text/html;charset=utf-8"
+
+
+#: The tag names the CDN's firewall refuses a path for, whatever their case, and the two prefixes
+#: it refuses every name beginning with (:func:`waf_blocks` carries the measurement). A name runs to
+#: whitespace, `/`, `>` or the end of the path; a closing tag is refused for `script` alone, and a
+#: `<!doctype` is refused too.
+_WAF_TAGS = frozenset(
+    "applet base comment embed frame frameset handler iframe import isindex link listener meta "
+    "noscript object script style vmlframe xml xss".split()
+)
+_WAF_TAG_PREFIXES = ("svg", "xsl")
+_TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
+#: A step up a directory, `..` followed by `/` or `\`, which the firewall refuses in the path and in
+#: a query parameter's value, measured 2026-10-12.
+_TRAVERSAL = re.compile(r"\.\.[/\\]")
+
+
+def _decoded_twice(text: str) -> str:
+    """``text`` percent-decoded twice, the depth the firewall was measured to read to
+    (2026-10-12)."""
+    return unquote(unquote(text))
+
+
+#: An HTML entity the firewall resolves, which is one terminated by a semicolon: `&lt;` is read
+#: and `&lt` (no semicolon) is not, measured 2026-10-12 (`&ltscript` serves where `&lt;script`
+#: refuses). Python's :func:`html.unescape` resolves the semicolon-less legacy forms too, so this
+#: feeds it only the terminated ones.
+_ENTITY = re.compile(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[0-9A-Za-z]+);")
+
+
+def _resolve_entities(text: str) -> str:
+    """``text`` with its semicolon-terminated HTML entities resolved, as the firewall reads them."""
+    return _ENTITY.sub(lambda m: html.unescape(m.group(0)), text)
+
+
+def waf_blocks(raw_path: str, raw_query: str) -> bool:
+    """Whether the CDN's firewall refuses the request, with its 403 (:data:`CDN_BLOCKED`).
+
+    What is copied is the part of it a table can hold, measured 2026-10-12 on both products: a tag
+    :data:`_WAF_TAGS` names in the path, read after two percent-decodings and with HTML entities
+    resolved, and a step up a directory (:data:`_TRAVERSAL`) in the path or in a query parameter's
+    value, read after the two percent-decodings alone. The firewall refuses more than this table
+    holds; a request it would refuse on other grounds reaches the routes here.
+    """
+    path = _resolve_entities(_decoded_twice(raw_path))
+    for match in _TAG.finditer(path):
+        closing, name = match.group(1), match.group(2).lower()
+        if closing:
+            if name == "script":
+                return True
+        elif name in _WAF_TAGS or name.startswith(_WAF_TAG_PREFIXES) or name == "!doctype":
+            return True
+    if _TRAVERSAL.search(_decoded_twice(raw_path)):
+        return True
+    for parameter in raw_query.split("&"):
+        name, eq, value = parameter.partition("=")
+        if eq and _TRAVERSAL.search(_decoded_twice(value)):
+            return True
+    return False
+
+
+class FrontDoor(NamedTuple):
+    """An answer a layer in front of the application gives, and which layer: `cdn` adds no header
+    of its own, `cdn edge` adds the edge's two, and `gateway` its two ids beside those (see
+    ``backlot.routers.atlassian.vendor_headers``)."""
+
+    status: int
+    layer: str
+    media_type: str
+    body: str
+    headers: dict[str, str]
+
+
+def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
+    seed = hashlib.sha512(f"cf:{method} {raw_path}".encode()).digest()[:40]
+    request_id = base64.urlsafe_b64encode(seed).decode()
+    return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
+
+
+def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
+    """What answers an `/atlassian` request before either product sees it, or None.
+
+    The checks a request meets, in order, measured 2026-10-12 by sending two of them wrong at once:
+    the CDN refuses a path carrying `%00` with its 400, ahead of everything (a `TRACE` or a
+    `PROPFIND` carrying one is that 400 too); then a method it does not pass on
+    (:data:`SERVED_METHODS`); then its firewall (:func:`waf_blocks`), so a `PROPFIND` on a path the
+    firewall refuses is the method's 403 and a `PATCH` on one is the firewall's; then the gateway's
+    `PATCH` (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash
+    anywhere under `/wiki/` with 400, for every method, every credential and the `Accept` values
+    `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes the
+    decoded path. Each layer's answer is the same whatever the credential, and the gateway's
+    Connect-token 403 comes after all of them.
+
+    An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
+    Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
+    where an encoded slash and `%00` can still be told from a decoded one.
+    """
+    if "%00" in raw_path:
+        return FrontDoor(
+            400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
+        )
+    if method not in SERVED_METHODS and method not in GATEWAY_REFUSED:
+        if method in CDN_405:
+            status, layer, reason = 405, "cdn", CDN_BAD_REQUEST
+        elif cdn_forbids(method):
+            status, layer, reason = 403, "cdn edge", CDN_METHOD_FORBIDDEN
+        else:
+            status, layer, reason = 400, "cdn", CDN_BAD_REQUEST
+        page = _cloudfront(status, reason, method, raw_path)
+        return FrontDoor(status, layer, "text/html", page, {})
+    if waf_blocks(raw_path, raw_query):
+        page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
+        return FrontDoor(403, "cdn edge", "text/html", page, {})
+    confluence = raw_path == WIKI or raw_path.startswith(f"{WIKI}/")
     if method in GATEWAY_REFUSED:
-        return 405 if is_confluence(path) else 400
-    return 403 if cdn_forbids(method) else 400
+        status, phrase, server = (
+            (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
+        )
+        page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
+        return FrontDoor(status, "gateway", "text/html", page, {})
+    if raw_path.startswith(f"{WIKI}/") and "%2f" in raw_path.lower():
+        return FrontDoor(
+            400, "gateway", TOMCAT_MEDIA_TYPE, TOMCAT_BAD_REQUEST, {"Content-Language": "en"}
+        )
+    return None
 
 
 def no_endpoint(path: str, method: str) -> AtlassianError:
