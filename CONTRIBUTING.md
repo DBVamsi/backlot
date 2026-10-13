@@ -93,13 +93,14 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request
 (see `.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose
-findings show as warnings on the lines they name and do not fail the run. Windows, where the
-default text encoding is cp1252 rather than UTF-8, gets its own workflow
-(`.github/workflows/windows.yml`): the README's first command and the test files that read and
-write Backlot's own files on every pull request, the whole suite weekly. Every file Backlot ships,
-writes and reads back is UTF-8, so a text file (and a text-mode subprocess pipe) is always opened
-with `encoding="utf-8"`, and both ruff (`PLW1514`) and the suite (an `EncodingWarning` is an
-error) refuse one opened without it.
+findings show as warnings on the lines they name and do not fail the run. Windows, where the default
+text encoding is cp1252 rather than UTF-8, gets its own workflow (`.github/workflows/windows.yml`):
+the README's first command, the test files that read and write Backlot's own files, and the tests
+marked xfail on every pull request, the whole suite weekly. A test that fails on Windows for a known
+reason is marked `xfail(strict=True)` there, so the pull request that fixes it removes the mark.
+Every file Backlot ships, writes and reads back is UTF-8, so a text file (and a text-mode subprocess
+pipe) is always opened with `encoding="utf-8"`, and both ruff (`PLW1514`) and the suite (an
+`EncodingWarning` is an error) refuse one opened without it.
 
 ### Testing the agent skill
 

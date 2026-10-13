@@ -4,9 +4,12 @@
 # encoding="utf-8" decodes with it, and the bundled schemas then fail to load before any command
 # runs. The Linux suite under PYTHONWARNDEFAULTENCODING=1 (ci.yml) refuses such an open wherever a
 # test reaches it; this job is the proof on the platform itself, with PYTHONUTF8 unset. A pull
-# request runs the README's first command and the test files that read and write Backlot's own
-# files — a fraction of the suite — and the whole suite runs weekly. Pinned below Python 3.15,
-# where UTF-8 mode becomes the default (PEP 686) and the job would prove nothing.
+# request runs the README's first command, the test files that read and write Backlot's own files,
+# and the tests marked xfail, so a pull request that makes a strict one pass fails until it removes
+# the mark. The whole suite runs weekly rather than per pull request: on windows-latest on
+# 2026-10-13 the per-pull-request files took 5.5 minutes, and 15.5 with tests/test_importer_byo.py
+# among them. Pinned below Python 3.15, where UTF-8 mode becomes the default (PEP 686) and the job
+# would prove nothing.
 name: Windows
 
 on:
@@ -38,8 +41,10 @@ jobs:
         run: >
           uv run --no-sync pytest -rs
           tests/test_cli.py tests/test_server.py tests/test_schema.py tests/test_docs.py
-          tests/test_importer_byo.py tests/test_importer_erb.py tests/test_acl.py
-          tests/test_fidelity.py tests/test_packaging.py
+          tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py tests/test_packaging.py
+      - name: The tests marked xfail, which still fail here
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: uv run --no-sync pytest -rxs -o addopts= -m xfail tests
       - name: The whole suite
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run --no-sync pytest -rs
