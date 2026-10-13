@@ -5410,6 +5410,7 @@ _ACCEPT_ROWS = [
     ("GET", _CQL, "none", "foo, application/json", None, 403, _JSON, None, {}),
     ("GET", _CQL, "admin", "application/json;charset=utf-7", None, 200, _JSON, None, {}),
     ("GET", _CQL, "none", "application/json,", None, 403, _JSON, None, {}),
+    ("GET", _CQL, "none", "*;q=0.5", None, 403, _JSON, None, {}),
     ("GET", _CQL, "none", "application/json;q=.5", None, 403, _JSON, None, {}),
     (
         "GET",
