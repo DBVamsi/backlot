@@ -127,6 +127,24 @@ def _dialable(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
+def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The interpreter `serve` runs its server on, and the environment to run it in.
+
+    On Windows a venv's ``python.exe`` is a launcher that starts the base interpreter as its child,
+    so the process `subprocess.Popen` returns is not the one serving: `_terminate` stops and reaps
+    the launcher while the interpreter holding ``db.sqlite`` and ``server.log`` open may still be
+    running, and the scratch directory cannot be removed yet. Measured on Windows 11 with Python
+    3.14.0 on 2026-10-13: renaming ``db.sqlite`` right after `_terminate` returned was refused in 16
+    of 20 runs. Started the way ``multiprocessing`` starts its children on Windows, on the base
+    interpreter with ``__PYVENV_LAUNCHER__`` naming the venv's ``python.exe``, the server still ran
+    from the venv and the same rename was refused in 0 of 20. Anywhere else this is
+    ``sys.executable`` and ``env`` as given."""
+    base = getattr(sys, "_base_executable", sys.executable)
+    if sys.platform == "win32" and os.path.normcase(base) != os.path.normcase(sys.executable):
+        return base, {**env, "__PYVENV_LAUNCHER__": sys.executable}
+    return sys.executable, env
+
+
 def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
     """Stop ``proc`` and reap it. A bare ``kill()`` can still leave a zombie if nothing calls
     ``wait()`` afterward — this always does, even on the SIGTERM-ignoring fallback path."""
@@ -285,10 +303,11 @@ def serve(
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
         # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
         log_path = Path(scratch) / "server.log"
+        python, server_env = _interpreter(env)
         with open(log_path, "wb") as log_f:
             proc = subprocess.Popen(
                 [
-                    sys.executable,
+                    python,
                     "-m",
                     "backlot",
                     "serve",
@@ -299,7 +318,7 @@ def serve(
                     "--log-level",
                     "warning",
                 ],
-                env=env,
+                env=server_env,
                 # The server reads nothing from stdin, and must not inherit the caller's: when
                 # the caller is `backlot mcp`, that is the MCP protocol pipe.
                 stdin=subprocess.DEVNULL,

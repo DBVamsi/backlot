@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -284,6 +285,48 @@ def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
         assert s.base_url
     assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
     assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+
+
+@pytest.mark.parametrize(
+    "platform, base, starts_on_base",
+    [
+        ("win32", r"C:\Python\python.exe", True),  # a venv on Windows: its python.exe is a launcher
+        ("win32", None, False),  # no venv: the base interpreter is sys.executable itself
+        ("linux", "/usr/bin/python3", False),  # a venv elsewhere: its python is no launcher
+    ],
+)
+def test_the_server_runs_on_the_interpreter_that_holds_its_files(
+    platform, base, starts_on_base, monkeypatch
+):
+    """In a venv on Windows the server starts on the base interpreter, with `__PYVENV_LAUNCHER__`
+    naming the venv's, so the process `_terminate` stops is the one holding the data dir open
+    (`backlot.server._interpreter` has the measurement); anywhere else it starts on
+    `sys.executable` with the environment unchanged. Asserted on the `Popen` call, which is all a
+    run off Windows can see, with the platform swapped on `backlot.server`'s own view of `sys`."""
+    import backlot.server as server_mod
+
+    base = base or sys.executable
+    view = SimpleNamespace(platform=platform, executable=sys.executable, _base_executable=base)
+    monkeypatch.setattr(server_mod, "sys", view)
+    seen = []
+
+    class Started(Exception):
+        pass
+
+    def Popen(argv, **kwargs):
+        seen.append((argv[0], kwargs["env"].get("__PYVENV_LAUNCHER__")))
+        raise Started
+
+    # Nothing is served, so the import that would build the corpus is skipped; it would also call
+    # the `Popen` above from inside `subprocess.run`.
+    monkeypatch.setattr(server_mod.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
+    with pytest.raises(Started), backlot.serve():
+        pass
+    if starts_on_base:
+        assert seen == [(base, sys.executable)]
+    else:
+        assert seen == [(sys.executable, os.environ.get("__PYVENV_LAUNCHER__"))]
 
 
 def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
