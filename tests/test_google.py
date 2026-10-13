@@ -1012,11 +1012,14 @@ _CHALLENGED = f'{_CHALLENGE}, error="invalid_token"'  # one that names a token t
 # One part per batch, as real's Drive batch and Sheets batch answered it. A row is the batch URI
 # with its query, the part as (method, target, body, its own Authorization), the status in the batch
 # and the status of the same request sent on its own, then a 302's `Location` below the server's
-# base URL, a 401's `WWW-Authenticate` or a 501's body. The status on its own is ``None`` where
-# real's is one Backlot does not give: the export with an empty `alt=` (400), the id holding a `%`
-# no two hex digits follow (503), the two downloads with `callback=a%20b` (503) and the export with
-# that `callback` beside `$.xgafv=9` (400). `_drive_batch_download`, `_drive_batch_redirect` and
-# `_workbook` record the rules.
+# base URL, a 401's `WWW-Authenticate`, the message of a 400 a token in the query answers, or a
+# 501's body. The status on its own is ``None`` where real's is one Backlot does not give: the
+# export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503), the two
+# downloads with `callback=a%20b` (503), the export with that `callback` beside `$.xgafv=9` (400)
+# and the media read with `access_token=nope` (Google's automated-queries page). It is ``None``
+# too where the part reads the batch's query, which the request on its own does not carry.
+# `_drive_batch_download`, `_drive_batch_redirect`, `_query_credential` and `_workbook` record the
+# rules.
 # fmt: off
 _BATCH_ROWS = [
     # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
@@ -1071,6 +1074,19 @@ _BATCH_ROWS = [
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "bearer nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
+    # a token in the part's query or the batch's (`_drive_batch_redirect`, `_query_credential`)
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&access_token=nope", None, _ANON), 400, None, gerr.QUERY_TOKEN_MESSAGE),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&access_token=", None, _ANON), 400, 400, gerr.QUERY_TOKEN_MESSAGE),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain&access_token=nope", None, _ANON), 400, 400, gerr.QUERY_TOKEN_MESSAGE),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media&access_token=ya29.x", None, _ANON), 401, 401, _CHALLENGED),
+    (f"{_DRIVE_BATCH}&access_token=nope", ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 400, None, gerr.QUERY_TOKEN_MESSAGE),
+    (f"{_DRIVE_BATCH}&ACCESS_TOKEN=x", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 400, None, gerr.QUERY_TOKEN_MESSAGE),
+    (f"{_DRIVE_BATCH}&bearer_token=x", ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 400, None, gerr.QUERY_TOKEN_MESSAGE),
+    (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 401, None, _CHALLENGED),
+    (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files", None, _ANON), 401, None, _CHALLENGED),
+    (f"{_DRIVE_BATCH}&access_token=nope", ("GET", "/drive/v3/files", None, _ANON), 403, None, None),
+    (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files?access_token=nope", None, _ANON), 403, None, None),
+    (f"{_DRIVE_BATCH}&access_token=ya29.x", ("GET", "/drive/v3/files", None, None), 200, None, None),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _ANON), 302, 403, "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, _ANON), 302, 403, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}", None, _ANON), 403, 403, None),
@@ -1161,6 +1177,8 @@ def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
             f"WWW-Authenticate: {detail}",
             "Content-Type: application/json; charset=UTF-8",
         ]
+    elif status == 400 and detail is not None:
+        assert json.loads(sub_body)["error"]["message"] == detail
     elif status == 501:
         assert json.loads(sub_body) == detail
     if alone is not None:
@@ -2545,18 +2563,73 @@ _CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("value, answer", _CREDENTIAL_ROWS)
+# A query per row, beside an `Authorization` value or none, and which of the same four answers real
+# gave a query of that shape, as ``routers.google._query_credential`` records. `ya29.x` stands for a
+# token of Google's shape that does not resolve, `{t}` for the admin token and `{m}` for the scoped
+# one, neither of that shape.
+# fmt: off
+_QUERY_CREDENTIAL_ROWS = [
+    (None, "access_token=ya29.x", _CHALLENGED), (None, "access_token=1/x", _CHALLENGED),
+    (None, "access_token=1%2Fx", _CHALLENGED), (None, "bearer_token=ya29.x", _CHALLENGED),
+    (None, "oauth_token=ya29.x", _CHALLENGED),
+    (None, "access_token={t}", _NONE), (None, "access_token=ya29", _NONE),
+    (None, "access_token=YA29.x", _NONE), (None, "access_token=%20ya29.x", _NONE),
+    (None, "access_token=", _NONE), (None, "ACCESS_TOKEN=ya29.x", _NONE),
+    # the first of `QUERY_TOKENS` the query carries is the gate, the last the token
+    (None, "access_token=ya29.x&oauth_token={t}", _SERVED),
+    (None, "oauth_token={t}&access_token=ya29.x", _SERVED),
+    (None, "access_token=ya29.x&bearer_token={t}", _SERVED),
+    (None, "bearer_token=ya29.x&oauth_token={t}", _SERVED),
+    (None, "access_token={t}&oauth_token=ya29.x", _NONE),
+    (None, "access_token=&oauth_token=ya29.x", _NONE),
+    (None, "oauth_token=nope&access_token=ya29.x", _CHALLENGED),
+    (None, "oauth_token=&access_token=ya29.x", _CHALLENGE),
+    (None, "access_token=ya29.x&access_token={t}", _CHALLENGE),
+    (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
+    (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
+    # into its token reads it without the gate, and a header that is no credential leaves it alone
+    ("Bearer {t}", "access_token=ya29.x", _SERVED),
+    ("Bearer nope", "access_token=ya29.x&oauth_token={t}", _CHALLENGED),
+    ("Bearer ,", "access_token=ya29.x&oauth_token={t}", _CHALLENGE),
+    ("Bearer", "access_token=ya29.x&oauth_token={t}", _NONE),
+    ("Bearer{t}", "access_token={t}", _SERVED), ("OAuth2 {t}", "access_token={t}", _SERVED),
+    ("Bearer{m}", "access_token={m}", _SERVED),
+    ("Bearer{t}", "access_token=nope", _CHALLENGED), ("Bearer{t}", "access_token=", _CHALLENGE),
+    ("Bearer{t}", "ACCESS_TOKEN={t}", _CHALLENGE),
+    ("Bearer{t}", "access_token=&oauth_token={t}", _SERVED),
+    ("Bearer{t}", "oauth_token=&access_token={t}", _CHALLENGE),
+    ("bearer {t}", "access_token=ya29.x&oauth_token={t}", _SERVED),
+    ("Basic Zm9vOmJhcg==", "access_token=ya29.x", _CHALLENGED), ("", "access_token=ya29.x", _CHALLENGED),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize(
+    "value, query, answer",
+    [(value, "", answer) for value, answer in _CREDENTIAL_ROWS] + _QUERY_CREDENTIAL_ROWS,
+)
 @pytest.mark.parametrize(
     "path, anonymous", [("/gmail/v1/users/me/labels/INBOX", 401), ("/drive/v3/files", 403)]
 )
 def test_a_credential_is_read_as_google_reads_it(
-    client, tokens_yaml, value, answer, path, anonymous
+    client, tokens_yaml, tokens, value, query, answer, path, anonymous
 ):
-    """The rows `_CREDENTIAL_ROWS` records, on an operation whose caller with no credential is a
-    missing one and on one whose is an unregistered one."""
-    r = client.get(path, headers={"Authorization": value.format(t=tokens_yaml["admin_token"])})
+    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record, on an operation whose caller
+    with no credential is a missing one and on one whose is an unregistered one. A served row is
+    answered as its token is under `Authorization: Bearer`, the scoped token's as the scoped user's
+    rather than the admin's."""
+    admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
+    headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
+    sent = query.format(t=admin, m=scoped)
+    r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
     if answer == _SERVED:
         assert r.status_code == 200, r.text
+        token = scoped if "{m}" in f"{value}{query}" else admin
+        assert r.json() == client.get(path, headers={"Authorization": f"Bearer {token}"}).json()
+        if token == scoped:
+            assert r.json() != client.get(path, headers={"Authorization": f"Bearer {admin}"}).json()
         return
     if answer == _NONE:
         assert r.status_code == anonymous, r.text
@@ -3822,6 +3895,72 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
                 )
             else:
                 assert _gerr(alone)["status"] == "UNAUTHENTICATED", (kind, value)
+
+
+# A byte-stream read per row whose query names a token, as ``gerr.token_in_query`` records: the
+# read (`media`; `export`; `bare`, an export with no `mimeType`; `missing`, an export of a file that
+# does not exist; `json`, an export asking for `alt=json`), the query, the `Authorization`, and the
+# status real answered with what identifies the answer: the message, or the challenge of a 401. The
+# `media` row with `nope` is the answer real gave inside a batch (``gerr.token_in_query``).
+_QUERY_TOKEN = gerr.QUERY_TOKEN_MESSAGE
+# fmt: off
+_DOWNLOAD_QUERY_TOKEN_ROWS = [
+    ("export", "access_token=nope", None, 400, _QUERY_TOKEN),
+    ("export", "access_token=", None, 400, _QUERY_TOKEN),
+    ("export", "oauth_token=nope", None, 400, _QUERY_TOKEN),
+    ("export", "ACCESS_TOKEN=nope", None, 400, _QUERY_TOKEN),
+    ("export", "BEARER_TOKEN=nope", None, 400, _QUERY_TOKEN),
+    ("export", "access_token=nope", "Bearer {t}", 400, _QUERY_TOKEN),
+    ("export", "access_token=nope", "bearer nope", 400, _QUERY_TOKEN),
+    ("export", "access_token=nope&callback=a%20b", None, 400, _QUERY_TOKEN),
+    ("export", "access_token=nope&callback=cb", None, 400, _QUERY_TOKEN),
+    ("bare", "access_token=nope", None, 400, _QUERY_TOKEN),
+    ("missing", "access_token=nope", None, 400, _QUERY_TOKEN),
+    ("media", "access_token=", None, 400, _QUERY_TOKEN),
+    ("media", "oauth_token=", None, 400, _QUERY_TOKEN),
+    ("media", "ACCESS_TOKEN=nope", None, 400, _QUERY_TOKEN),
+    ("media", "access_token=", "Bearer {t}", 400, _QUERY_TOKEN),
+    ("media", "access_token=&callback=a%20b", None, 400, _QUERY_TOKEN),
+    ("media", "access_token=nope", None, 400, _QUERY_TOKEN),
+    # what comes before it
+    ("export", "access_token=nope&%24.xgafv=9", None, 400, XGAFV_REFUSAL.format("9")),
+    ("media", "access_token=&%24.xgafv=9", None, 400, XGAFV_REFUSAL.format("9")),
+    ("export", "access_token=nope", "Bearer nope", 401, _CHALLENGED),
+    ("media", "access_token=", "Bearer nope", 401, _CHALLENGED),
+    ("export", "access_token=ya29.x", None, 401, _CHALLENGED),
+    ("export", "access_token=nope", "Bearer{t}", 401, _CHALLENGED),
+    # names it does not take, and a read that is no download
+    ("export", "accesstoken=nope", None, 403, gerr.MISSING_API_KEY_MESSAGE),
+    ("export", "id_token=nope", None, 403, gerr.MISSING_API_KEY_MESSAGE),
+    ("json", "access_token=nope", None, 403, gerr.UNREGISTERED_CALLER_MESSAGE),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("kind, query, value, status, answer", _DOWNLOAD_QUERY_TOKEN_ROWS)
+def test_a_download_refuses_a_token_in_its_query(
+    client, admin_h, tokens_yaml, kind, query, value, status, answer
+):
+    """The rows `_DOWNLOAD_QUERY_TOKEN_ROWS` records. A function of its own beside
+    `test_the_refusal_order_on_a_download_is_system_bearer_then_callback`, whose rows are
+    `Authorization` values on a query that names no token."""
+    requests = _download_requests(client, admin_h)
+    url, params = {
+        "media": requests["media"],
+        "export": requests["export"],
+        "bare": (requests["export"][0], {}),
+        "missing": ("/drive/v3/files/nosuchfile000/export", requests["export"][1]),
+        "json": (requests["export"][0], {**requests["export"][1], "alt": "json"}),
+    }[kind]
+    sent = "&".join(f"{k}={v}" for k, v in params.items())
+    token = tokens_yaml["admin_token"]
+    headers = {} if value is None else {"Authorization": value.format(t=token)}
+    r = client.get(f"{url}?{sent}&{query}" if sent else f"{url}?{query}", headers=headers)
+    assert r.status_code == status, r.text
+    if status == 401:
+        assert r.headers["www-authenticate"] == answer
+    else:
+        assert _gerr(r)["message"] == answer
 
 
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
