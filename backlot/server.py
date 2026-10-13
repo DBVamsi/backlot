@@ -279,10 +279,11 @@ def serve(
         # UTF-8, and a Python before 3.15 writes a redirected stream in the platform's encoding
         # (cp1252 on a Western Windows) unless told otherwise.
         env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir), "PYTHONIOENCODING": "utf-8"}
-        # Read with the SAME env + cwd the subprocess below inherits (only those two differ, and
-        # neither affects admin_token), so this resolves to whatever token the server will
-        # actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in their cwd both
-        # change it (Settings declares env_file=".env"), and the returned Server.token must track
+        # Read with the SAME env + cwd the subprocess below inherits, so this resolves to whatever
+        # token the server will actually enforce: what the server's environment adds to this one
+        # (the two keys above, and in a venv on Windows `_interpreter`'s __PYVENV_LAUNCHER__) does
+        # not set admin_token, while a caller's BACKLOT_ADMIN_TOKEN env var or a .env in their cwd
+        # both change it (Settings declares env_file=".env"). The returned Server.token must track
         # that: otherwise a caller's first authenticated call fails with HTTP 200 / {"ok": false}
         # (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token

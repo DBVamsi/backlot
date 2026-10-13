@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
+import posixpath
 import socket
 import subprocess
 import sys
@@ -288,45 +290,54 @@ def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "platform, base, starts_on_base",
+    "platform, path, executable, base, starts_on_base",
     [
-        ("win32", r"C:\Python\python.exe", True),  # a venv on Windows: its python.exe is a launcher
-        ("win32", None, False),  # no venv: the base interpreter is sys.executable itself
-        ("linux", "/usr/bin/python3", False),  # a venv elsewhere: its python is no launcher
+        # a venv on Windows: its python.exe is a launcher
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", r"C:\Python\python.exe", True),
+        # the venv's own python.exe by Windows' rules, in another case and with forward slashes
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", "c:/VENV/scripts/PYTHON.EXE", False),
+        # no venv: the base interpreter is sys.executable itself
+        ("win32", ntpath, r"C:\Python\python.exe", r"C:\Python\python.exe", False),
+        # a venv elsewhere: its python is no launcher
+        ("linux", posixpath, "/venv/bin/python", "/usr/bin/python3", False),
     ],
 )
 def test_the_server_runs_on_the_interpreter_that_holds_its_files(
-    platform, base, starts_on_base, monkeypatch
+    platform, path, executable, base, starts_on_base, monkeypatch
 ):
-    """The server `serve` starts is the interpreter `backlot.server._interpreter` picks, which is
-    why and where its measurement lives: `sys._base_executable` and a `__PYVENV_LAUNCHER__` of
-    `sys.executable` in a venv on Windows, `sys.executable` and the caller's environment in every
-    other row. Asserted on the `Popen` call, which is all a run off Windows can see, with the
-    platform swapped on `backlot.server`'s own view of `sys`."""
+    """The server `serve` starts runs on the interpreter `backlot.server._interpreter` picks, which
+    is why and where its measurement lives: in a venv on Windows, `sys._base_executable` with the
+    environment `serve` built plus a `__PYVENV_LAUNCHER__` of `sys.executable`; in every other row,
+    `sys.executable` with that environment as built. Asserted on the `Popen` call, which is all a
+    run off Windows can see, with the platform, both paths and the path rules swapped on
+    `backlot.server`'s own view of `sys` and `os`."""
     import backlot.server as server_mod
 
-    base = base or sys.executable
-    view = SimpleNamespace(platform=platform, executable=sys.executable, _base_executable=base)
+    view = SimpleNamespace(platform=platform, executable=executable, _base_executable=base)
     monkeypatch.setattr(server_mod, "sys", view)
-    seen = []
+    monkeypatch.setattr(server_mod, "os", SimpleNamespace(path=path, environ=os.environ))
+    built, seen = [], []
 
     class Started(Exception):
         pass
 
+    def run(argv, **kwargs):
+        built.append(kwargs["env"])
+
     def Popen(argv, **kwargs):
-        seen.append((argv[0], kwargs["env"].get("__PYVENV_LAUNCHER__")))
+        seen.append((argv[0], kwargs["env"]))
         raise Started
 
-    # Nothing is served, so the import that would build the corpus is skipped; it would also call
-    # the `Popen` above from inside `subprocess.run`.
-    monkeypatch.setattr(server_mod.subprocess, "run", lambda *args, **kwargs: None)
+    # Nothing is served, so the import that would build the corpus only records the environment
+    # `serve` built; run for real it would also call the `Popen` above.
+    monkeypatch.setattr(server_mod.subprocess, "run", run)
     monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
     with pytest.raises(Started), backlot.serve():
         pass
     if starts_on_base:
-        assert seen == [(base, sys.executable)]
+        assert seen == [(base, {**built[0], "__PYVENV_LAUNCHER__": executable})]
     else:
-        assert seen == [(sys.executable, os.environ.get("__PYVENV_LAUNCHER__"))]
+        assert seen == [(executable, built[0])]
 
 
 def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
