@@ -3302,7 +3302,7 @@ def _check_id_map_destination(path: Path) -> None:
     """
     existed = path.exists()
     try:
-        with path.open("a"):
+        with path.open("a", encoding="utf-8"):
             pass
     except OSError as e:
         raise SystemExit(f"--id-map {path}: {e.strerror}")

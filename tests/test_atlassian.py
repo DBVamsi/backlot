@@ -138,7 +138,7 @@ def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
 
         from backlot import synth
 
-        written = yaml.safe_load(settings.tokens_path.read_text())
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         tokens = {u["email"]: u["token"] for u in written["users"]}
         tokens["admin"] = written["admin_token"]
 
@@ -693,7 +693,7 @@ def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_pat
     settings = tiny_corpus(tmp_path, corpus)
     wiki = "/atlassian/wiki/rest/api"
     with client_for(settings, reload=True) as c:
-        token = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        token = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         admin = {"Authorization": f"Bearer {token}"}
         for sent, name, title in (
             ("Ops", "Ops", "Upper"),
@@ -947,7 +947,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:
-        written = yaml.safe_load(settings.tokens_path.read_text())
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         tokens = {u["email"]: u["token"] for u in written["users"]}
         callers = {
             "admin": {"Authorization": f"Bearer {written['admin_token']}"},
@@ -1436,7 +1436,7 @@ def paged(tmp_path_factory):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         yield client, {"Authorization": f"Bearer {tok}"}
 
 
@@ -1596,7 +1596,7 @@ def test_jira_orders_comments_sharing_a_timestamp_by_seq(tmp_path):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         h = {"Authorization": f"Bearer {tok}"}
         url = "/atlassian/rest/api/3/issue/PAY-9/comment"
         asc = client.get(url, headers=h, params={"orderBy": "created"}).json()
@@ -2082,7 +2082,7 @@ def searchable(tmp_path_factory):
         ],
     )
     with client_for(settings, reload=True) as client:
-        tok = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+        tok = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
         yield client, {"Authorization": f"Bearer {tok}"}
 
 
@@ -2264,7 +2264,7 @@ def test_confluence_cql_cursor_finds_out_no_page_the_caller_cannot_see(tmp_path)
          "author_groups": ["people"], "visibility": "group"},
     ]  # fmt: skip
     settings = tiny_corpus(tmp_path, records)
-    users = yaml.safe_load(settings.tokens_path.read_text())
+    users = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     with client_for(settings, reload=True) as client:
         admin_h = {"Authorization": f"Bearer {users['admin_token']}"}
         ava = next(u["token"] for u in users["users"] if u["email"] == "ava@acme.com")
@@ -4004,10 +4004,10 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
     import backlot
     from backlot.fidelity.comparisons import baseline_path
 
-    rows = json.loads(baseline_path("jira").read_text())["acknowledged"]
+    rows = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["acknowledged"]
     unserved = [row["path"] for row in rows if row["kind"] == "missing_operation"]
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
-    content = json.loads(table.read_text())
+    content = json.loads(table.read_text(encoding="utf-8"))
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
 
 
@@ -4653,7 +4653,7 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
         for key in keys
     ]
     settings = tiny_corpus(tmp_path, corpus)
-    admin = yaml.safe_load(settings.tokens_path.read_text())["admin_token"]
+    admin = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {admin}"}
         path = f"/atlassian/rest/api/{version}/issue/"

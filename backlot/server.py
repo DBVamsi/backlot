@@ -257,13 +257,16 @@ def serve(
             else:
                 corpus = data_dir / "corpus.jsonl"
                 corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
-        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir)}
-        # Read with the SAME env + cwd the subprocess below inherits (only BACKLOT_DATA_DIR
-        # differs, and that doesn't affect admin_token), so this resolves to whatever token the
-        # server will actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in
-        # their cwd both change it (Settings declares env_file=".env"), and the returned
-        # Server.token must track that: otherwise a caller's first authenticated call fails
-        # with HTTP 200 / {"ok": false} (Slack fidelity), which reads as the caller's own mistake.
+        # PYTHONIOENCODING: the child's stdout and stderr land in the log file read below as
+        # UTF-8, and a Python before 3.15 writes a redirected stream in the platform's encoding
+        # (cp1252 on a Western Windows) unless told otherwise.
+        env = {**os.environ, "BACKLOT_DATA_DIR": str(data_dir), "PYTHONIOENCODING": "utf-8"}
+        # Read with the SAME env + cwd the subprocess below inherits (only those two differ, and
+        # neither affects admin_token), so this resolves to whatever token the server will
+        # actually enforce — a caller's BACKLOT_ADMIN_TOKEN env var or a .env in their cwd both
+        # change it (Settings declares env_file=".env"), and the returned Server.token must track
+        # that: otherwise a caller's first authenticated call fails with HTTP 200 / {"ok": false}
+        # (Slack fidelity), which reads as the caller's own mistake.
         token = Settings().admin_token
         if data_dir == Path(scratch):
             # `-m backlot` rather than the `backlot` script: same CLI, but resolved through THIS
@@ -307,7 +310,7 @@ def serve(
         try:
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):
                 if proc.poll() is not None:
-                    tail = log_path.read_text(errors="replace")[-4000:]
+                    tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
                     raise RuntimeError(
                         f"Backlot exited with code {proc.returncode} before becoming ready on "
                         f"{base}:\n{tail}"

@@ -23,7 +23,7 @@ def _gate():
 
 gate = _gate()
 
-TEMPLATE = (REPO / ".github" / "pull_request_template.md").read_text()
+TEMPLATE = (REPO / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 FILLED = TEMPLATE + "\nCloses #412.\n"
 OTHER_HEADINGS = "## Summary\n\nServes it.\n\n## Changes\n\n- one\n\n## Testing\n\n- pytest\n"
 

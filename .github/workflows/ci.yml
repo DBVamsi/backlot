@@ -37,6 +37,10 @@ jobs:
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
       - name: Unit tests
+        env:
+          # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
+          # filterwarnings turns into a failure of the test that opened it.
+          PYTHONWARNDEFAULTENCODING: "1"
         run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies

@@ -77,6 +77,7 @@ def test_served_operation_ids_are_stable_across_processes():
             text=True,
             env={**os.environ, "PYTHONHASHSEED": seed},
             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            encoding="utf-8",
         )
         assert out.returncode == 0, out.stderr[-2000:]
         runs.append(json.loads(out.stdout))

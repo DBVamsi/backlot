@@ -195,7 +195,7 @@ def build_corpus(
         records = [
             complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
         ]
-    corpus.write_text("\n".join(json.dumps(r) for r in records))
+    corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
     load(corpus, settings)
     return settings
 

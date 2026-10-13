@@ -136,9 +136,9 @@ def _baseline(tmp_path, findings, note=""):
         path, findings, measured="2026-09-01"
     )
     if note:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
         raw["acknowledged"][0]["note"] = note
-        path.write_text(json.dumps(raw))
+        path.write_text(json.dumps(raw), encoding="utf-8")
     return Baseline.load(path)
 
 
@@ -158,7 +158,7 @@ def test_rewriting_a_baseline_keeps_its_notes_and_takes_the_new_identity(tmp_pat
     baseline.identified_as("renamed", ("https://new.invalid",)).write(
         path, known, measured="2026-10"
     )
-    written = json.loads(path.read_text())
+    written = json.loads(path.read_text(encoding="utf-8"))
     assert written["source"] == "renamed"
     assert written["endpoints"] == ["https://new.invalid"]
     assert [e.get("note") for e in written["acknowledged"]] == [
@@ -340,7 +340,8 @@ def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
     path.write_text(
         json.dumps(
             {"source": "s", "endpoints": "https://one.invalid", "measured": "", "acknowledged": []}
-        )
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(TypeError, match="tuple of URLs"):
         Baseline.load(path)
@@ -350,7 +351,7 @@ def test_a_baseline_refuses_one_endpoint_passed_unwrapped(tmp_path):
         raw = {"source": "s", "measured": "", "acknowledged": []}
         if endpoints is not None:
             raw["endpoints"] = endpoints
-        path.write_text(json.dumps(raw))
+        path.write_text(json.dumps(raw), encoding="utf-8")
         assert Baseline.load(path).endpoints == want
 
 
@@ -359,7 +360,7 @@ def test_a_baseline_round_trips_every_endpoint_it_names(tmp_path):
     ends = ("https://a.invalid", "https://b.invalid")
     Baseline.empty("s", ends).write(p, [], measured="2026-01-01")
     assert Baseline.load(p).endpoints == ends
-    assert json.loads(p.read_text())["endpoints"] == list(ends)
+    assert json.loads(p.read_text(encoding="utf-8"))["endpoints"] == list(ends)
 
 
 def test_a_google_source_is_compared_against_every_api_it_is_served_through():
@@ -603,7 +604,7 @@ def test_every_acknowledged_breaking_divergence_carries_its_reasoning():
     """No flag writes one: a breaking entry is a hand edit, and the note is what a reviewer reads
     in the diff instead of a flag on a command nobody kept."""
     for name in COMPARISONS:
-        for entry in json.loads(baseline_path(name).read_text())["acknowledged"]:
+        for entry in json.loads(baseline_path(name).read_text(encoding="utf-8"))["acknowledged"]:
             if entry["severity"] == BREAKING:
                 assert entry.get("note"), f"{name}: {entry['kind']} {entry['path']}"
 
@@ -633,7 +634,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
     assert all(hasattr(package, name) for name in surface)
     imported = {
         alias.name
-        for node in ast.walk(ast.parse(Path(cli.__file__).read_text()))
+        for node in ast.walk(ast.parse(Path(cli.__file__).read_text(encoding="utf-8")))
         if isinstance(node, ast.ImportFrom) and node.module == "backlot.fidelity"
         for alias in node.names
     }
@@ -1085,7 +1086,9 @@ def test_update_baseline_records_gaps_and_leaves_breaking_findings_live(_vendor,
     _vendor(_both())
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
     assert cli.main([*args, "--update-baseline"]) == 1
-    acknowledged = json.loads((tmp_path / "fireflies.json").read_text())["acknowledged"]
+    acknowledged = json.loads((tmp_path / "fireflies.json").read_text(encoding="utf-8"))[
+        "acknowledged"
+    ]
     assert [(f["severity"], f["path"]) for f in acknowledged] == [(GAP, "Transcript.summary")]
     assert "type_mismatch" in capsys.readouterr().err
 
@@ -1097,7 +1100,7 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
     path = tmp_path / "fireflies.json"
     assert cli.main([*args, "--update-baseline"]) == 1
 
-    edited = json.loads(path.read_text())
+    edited = json.loads(path.read_text(encoding="utf-8"))
     edited["acknowledged"].append(
         {
             "kind": "type_mismatch",
@@ -1107,10 +1110,14 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
             "note": "deliberate",
         }
     )
-    path.write_text(json.dumps(edited))
+    path.write_text(json.dumps(edited), encoding="utf-8")
     assert cli.main(args) == 0
     assert cli.main([*args, "--update-baseline"]) == 0
-    kept = [e for e in json.loads(path.read_text())["acknowledged"] if e["severity"] == BREAKING]
+    kept = [
+        e
+        for e in json.loads(path.read_text(encoding="utf-8"))["acknowledged"]
+        if e["severity"] == BREAKING
+    ]
     assert [e["note"] for e in kept] == ["deliberate"]
 
     # The vendor moves again. The note was written about `vendor: Int`, and it says nothing about a
@@ -1120,7 +1127,11 @@ def test_a_breaking_finding_acknowledged_by_hand_survives_a_rewrite(_vendor, tmp
     _vendor(VENDOR.replace("Float", "String"))
     assert cli.main(args) == 1
     assert cli.main([*args, "--update-baseline"]) == 1
-    kept = [e for e in json.loads(path.read_text())["acknowledged"] if e["severity"] == BREAKING]
+    kept = [
+        e
+        for e in json.loads(path.read_text(encoding="utf-8"))["acknowledged"]
+        if e["severity"] == BREAKING
+    ]
     assert [(e["detail"], e["note"]) for e in kept] == [
         ("vendor: Int, Backlot: Float", "deliberate")
     ]
