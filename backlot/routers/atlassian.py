@@ -1530,11 +1530,8 @@ async def confluence_space_permission(key: str, request: Request):
     fact about the wire, and a `GET` operation on this path is a declaration the vendor's document
     does not make.
 
-    The refusal covers the `POST` as well, where real gets past the method check: a `POST` here
-    answers 415 with Spring's `UNSUPPORTED_MEDIA_TYPE` naming the absent content type (measured
-    2026-09-17, on a key naming no space). That is the acknowledged `missing_operation` for this
-    path showing on the wire, as an unserved write does on any path Backlot routes for a read, and
-    answering the 415 would mean serving the first step of the write itself.
+    A `POST` here is the published write, which ``_published_answer`` answers as real does before
+    it runs (its 415, then the caller's refusal, :data:`_CONFLUENCE_CONSUMES`).
 
     ``key`` is unused and declared because the path carries it: the refusal comes before any lookup
     on real, where `GET space/NOSUCHSPACE/permission` answers the same 405 as a key that names a
@@ -2682,19 +2679,58 @@ _CONFLUENCE_NOT_PERMITTED_GETS = (
     "atlassian-connect/1/app/module/dynamic",
 )
 
+#: The Confluence writes its JAX-RS services answer, as opposed to its Spring ones: measured
+#: 2026-10-13 with no credential on each of the 65 writes the Confluence baseline lists as
+#: `missing_operation`, these 23 answered a JSON body or none with
+#: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` (but the two that ran,
+#: :data:`_CONFLUENCE_RUN_ANONYMOUSLY`), another type with an empty 415 (but the three under
+#: `settings/lookandfeel`, :data:`_CONFLUENCE_JAXRS_UNTYPED`), and a `Content-Type` with no `/`
+#: (`foo`) with Tomcat's 400 page (:func:`_confluence_jaxrs_media_refusal`).
+_CONFLUENCE_JAXRS_WRITES = tuple(
+    f"{method} /wiki/rest/{path}"
+    for method, path in (
+        ("POST", "api/audit"),
+        ("PUT", "api/audit/retention"),
+        ("POST", "api/content/archive"),
+        ("POST", "api/content/blueprint/instance/{}"),
+        ("PUT", "api/content/blueprint/instance/{}"),
+        ("POST", "api/contentbody/convert/async/bulk/tasks"),
+        ("POST", "api/contentbody/convert/async/{}"),
+        ("PUT", "api/relation/{}/from/{}/{}/to/{}/{}"),
+        ("DELETE", "api/relation/{}/from/{}/{}/to/{}/{}"),
+        ("PUT", "api/settings/lookandfeel"),
+        ("POST", "api/settings/lookandfeel/custom"),
+        ("DELETE", "api/settings/lookandfeel/custom"),
+        ("POST", "api/template"),
+        ("PUT", "api/template"),
+        ("DELETE", "api/template/{}"),
+        *(
+            (method, f"api/user/watch/{kind}/{{}}")
+            for kind in ("content", "label", "space")
+            for method in ("POST", "DELETE")
+        ),
+        ("POST", "atlassian-connect/1/app/module/dynamic"),
+        ("DELETE", "atlassian-connect/1/app/module/dynamic"),
+    )
+)
+_CONFLUENCE_JAXRS = _operations(_CONFLUENCE_JAXRS_WRITES)
+_CONFLUENCE_JAXRS_UNTYPED = _operations(
+    row for row in _CONFLUENCE_JAXRS_WRITES if "/settings/lookandfeel" in row
+)
+#: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
+_CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
+
 #: The Confluence services whose refusal of a caller with no credential is
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` rather than the one every other operation
 #: gives. Measured 2026-09-30 with no credential on each of the 63 GETs the Confluence baseline
 #: lists as `missing_operation`: these nineteen (:data:`_CONFLUENCE_NOT_PERMITTED_GETS`) answered
-#: that body, 42 the other, and two ran (:data:`_CONFLUENCE_RUN_ANONYMOUSLY`); and on 2026-10-12 on
-#: the ten writes it lists at a path a route here serves under another method, where
-#: `POST content/archive` answered it and the other nine, once past their media-type check
-#: (:data:`_CONFLUENCE_CONSUMES`), the other. No field of the vendor's document separates the two
-#: refusals, so the services are named.
+#: that body, 42 the other, and two ran (:data:`_CONFLUENCE_RUN_ANONYMOUSLY`); and the JAX-RS
+#: writes (:data:`_CONFLUENCE_JAXRS_WRITES`) answered it too. No field of the vendor's document
+#: separates the two refusals, so the services are named.
 _CONFLUENCE_NOT_PERMITTED = _operations(
     [
         *(f"GET /wiki/rest/{path}" for path in _CONFLUENCE_NOT_PERMITTED_GETS),
-        "POST /wiki/rest/api/content/archive",
+        *(row for row in _CONFLUENCE_JAXRS_WRITES if row not in _CONFLUENCE_JAXRS_RUN),
     ]
 )
 _CONFLUENCE_CONNECT_MODULES = "/wiki/rest/atlassian-connect/1/app/module/dynamic"
@@ -2712,21 +2748,23 @@ _CONFLUENCE_OUTSIDE_THE_DOCUMENT = _operations(
         "space/{}/property",
     )
 )
-#: The two the same sweep found running with no credential: a 200 with `[]` and a 400 for an id
-#: that does not match the service's pattern.
+#: The two GETs the same sweep found running with no credential, a 200 with `[]` and a 400 for an
+#: id that does not match the service's pattern, and the two JAX-RS writes beside them.
 _CONFLUENCE_RUN_ANONYMOUSLY = _operations(
     (
         "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
         "GET /wiki/rest/api/contentbody/convert/async/{}",
+        *_CONFLUENCE_JAXRS_RUN,
     )
 )
-#: The Confluence operations that check the request's media type ahead of the caller, whoever it
-#: is: (method, pattern, the types taken). The attachment writes take a multipart body alone and
-#: `space/{key}/permission` a JSON one; with no credential, `Bearer nope` and a Basic pair it
-#: rejects, a body of another type, or none, is the 415 (``errors.atlassian`` names how it reads
-#: the type) and a body of that type the refusal :func:`_confluence_refusal` gives, measured
-#: 2026-10-12. The other writes at a served route's path answer that refusal with a body and
-#: without one.
+#: The Confluence operations a Spring service checks the request's media type for ahead of the
+#: caller, whoever it is: (method, pattern, the types taken). With no credential, `Bearer nope` and
+#: a Basic pair it rejects, a body of another type, or none, is the 415 (``errors.atlassian`` names
+#: how it reads the type) and a body of that type the refusal :func:`_confluence_refusal` gives,
+#: measured 2026-10-12 on the attachment writes and `space/{key}/permission`, and 2026-10-13 on each
+#: of the 65 writes the baseline lists: these sixteen answered no body and a `text/plain` one with
+#: the 415, the JAX-RS ones (:data:`_CONFLUENCE_JAXRS_WRITES`) their own way, and the other 26 the
+#: caller's refusal either way.
 _CONFLUENCE_CONSUMES = tuple(
     (method, pattern, consumes)
     for rows, consumes in (
@@ -2734,10 +2772,28 @@ _CONFLUENCE_CONSUMES = tuple(
             (
                 "POST /wiki/rest/api/content/{}/child/attachment",
                 "PUT /wiki/rest/api/content/{}/child/attachment",
+                "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
             ),
             ("multipart/form-data",),
         ),
-        (("POST /wiki/rest/api/space/{}/permission",), ("application/json",)),
+        (
+            (
+                "POST /wiki/rest/api/content/{}/pagehierarchy/copy",
+                "POST /wiki/rest/api/content/{}/permission/check",
+                "POST /wiki/rest/api/content/{}/restriction",
+                "PUT /wiki/rest/api/content/{}/restriction",
+                "PUT /wiki/rest/api/content/{}/state",
+                "POST /wiki/rest/api/content/{}/version",
+                "POST /wiki/rest/api/group",
+                "POST /wiki/rest/api/group/userByGroupId",
+                "POST /wiki/rest/api/space/{}/permission",
+                "POST /wiki/rest/api/space/{}/permission/custom-content",
+                "PUT /wiki/rest/api/space/{}/theme",
+                "POST /wiki/rest/api/user/{}/property/{}",
+                "PUT /wiki/rest/api/user/{}/property/{}",
+            ),
+            ("application/json",),
+        ),
     )
     for method, pattern in _operations(rows)
 )
@@ -2814,6 +2870,29 @@ def _confluence_refusal(request: Request, vendor_path: str) -> Response | None:
     )
 
 
+def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
+    """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
+    it will not read, or None: Tomcat's 400 page for one that cannot be read as a type, and an empty
+    415 with no `content-type` for a type other than JSON, where the service checks the type (all
+    but :data:`_CONFLUENCE_JAXRS_UNTYPED`). A request with no `Content-Type` passes. Measured
+    2026-10-13 with `text/plain`, `application/xml` and `foo` on each of them, with no credential
+    and (on `POST content/archive`) with one."""
+    if not _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
+        return None
+    status = errors_atlassian.jaxrs_media_type_refusal(
+        request.headers.get("content-type"),
+        checks_type=not _is(_CONFLUENCE_JAXRS_UNTYPED, request.method, vendor_path),
+    )
+    if status == 400:
+        return Response(
+            errors_atlassian.TOMCAT_BAD_REQUEST,
+            status_code=400,
+            media_type=errors_atlassian.TOMCAT_MEDIA_TYPE,
+            headers={"Content-Language": "en"},
+        )
+    return None if status is None else Response(status_code=status)
+
+
 def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
@@ -2827,10 +2906,11 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     nothing the caller can see is its 404. The operation is the one :func:`_jira_operation` names.
 
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
-    type where the operation does (:data:`_CONFLUENCE_CONSUMES`), then refuses a caller with no
-    credential it resolves on every operation (:func:`_confluence_refusal`); the 401's place was
-    measured 2026-10-12 with an undecodable value and with one holding no colon, each with a body of
-    a type the operation does not take.
+    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
+    way, :func:`_confluence_jaxrs_media_refusal`), then refuses a caller with no credential it
+    resolves on every operation (:func:`_confluence_refusal`); the 401's place was measured
+    2026-10-12 with an undecodable value and with one holding no colon, each with a body of a type
+    the operation does not take.
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -2848,7 +2928,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                 refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
                 if refused is not None:
                     raise refused
-        return _confluence_refusal(request, vendor_path)
+        jaxrs = _confluence_jaxrs_media_refusal(request, vendor_path)
+        return jaxrs if jaxrs is not None else _confluence_refusal(request, vendor_path)
     if not errors_atlassian.serves_the_jira_api(request.url.path):
         return None
     operation = _jira_operation(method, vendor_path)

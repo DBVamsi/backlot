@@ -560,7 +560,7 @@ def refuse_a_media_type(
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
       none of it
     - where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type
-      read without one (``scripts/gen_jira_unserved.py`` names the operations, measured 2026-10-12)
+      read without one (`DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py``)
 
     A charset is looked up in Python's codec registry rather than Java's, which agree on the ones
     above.
@@ -606,7 +606,10 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     absent or empty `Content-Type` is named `''`, a type is named as :func:`_parse_media_type` reads
     it (`APPLICATION/JSON` as `application/json`, `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters
     kept), and a value with no `/` (`foo`) is refused as no type at all. A value Spring cannot read
-    for another reason is named as sent, the one case the sweep did not cover.
+    for another reason is named as sent here, where real says why it could not read it
+    (`Invalid mime type "text/plain;charset=nope": unsupported charset 'nope'`,
+    `Invalid mime type "text/": does not contain subtype after '/'`, 2026-10-13); the status and
+    the code are the same.
     """
     value = headers.get("content-type") or ""
     media_type = _parse_media_type(value) if value else None
@@ -628,6 +631,21 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
             ]
         },
     )
+
+
+def jaxrs_media_type_refusal(value: str | None, *, checks_type: bool) -> int | None:
+    """The status a Confluence JAX-RS write refuses a `Content-Type` of ``value`` with, or None:
+    400 (Tomcat's page, :data:`TOMCAT_BAD_REQUEST`) for one it cannot read as a type, measured with
+    `foo`, and where it ``checks_type``, 415 with no body for a type other than JSON (`text/plain`
+    and `application/xml`), measured 2026-10-13. No `Content-Type` is no refusal."""
+    if not value:
+        return None
+    media_type = _parse_media_type(value)
+    if media_type is None:
+        return 400
+    if checks_type and not _takes(("application/json",), media_type):
+        return 415
+    return None
 
 
 # The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
@@ -967,8 +985,8 @@ _GATEWAY_PATCH_PAGE = (
     "</body>\r\n</html>\r\n"
 )
 
-#: Tomcat's page for a Confluence path carrying an encoded slash, on `text/html;charset=utf-8` with
-#: `Content-Language: en`, measured 2026-10-12 (:func:`front_door`).
+#: Tomcat's page for a Confluence path carrying an encoded slash or backslash, on
+#: `text/html;charset=utf-8` with `Content-Language: en`, measured 2026-10-12 (:func:`front_door`).
 TOMCAT_BAD_REQUEST = (
     '<!doctype html><html lang="en"><head><title>HTTP Status 400 – Bad Request</title>'
     '<style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b '
@@ -980,19 +998,24 @@ TOMCAT_BAD_REQUEST = (
 TOMCAT_MEDIA_TYPE = "text/html;charset=utf-8"
 
 
-#: The tag names the CDN's firewall refuses a path for, whatever their case, and the two prefixes
-#: it refuses every name beginning with (:func:`waf_blocks` carries the measurement). A name runs to
-#: whitespace, `/`, `>` or the end of the path; a closing tag is refused for `script` alone, and a
-#: `<!doctype` is refused too.
+#: The tag names the CDN's firewall refuses a path for, whatever their case, and the prefixes it
+#: refuses every name beginning with (:func:`waf_blocks` carries the measurement). A name runs to
+#: whitespace, `/`, `<`, `>` or the end of the path, and a closing tag is refused for `script`
+#: alone. `<!doctype` and `<!entity` are prefixes too (`<!DOCTYPEhtml>` and `<!entityx>` refused,
+#: `<!doctyp>` and `<!ELEMENT>` served, 2026-10-13).
 _WAF_TAGS = frozenset(
     "applet base comment embed frame frameset handler iframe import isindex link listener meta "
     "noscript object script style vmlframe xml xss".split()
 )
-_WAF_TAG_PREFIXES = ("svg", "xsl")
+_WAF_TAG_PREFIXES = ("svg", "xsl", "!doctype", "!entity")
 _TAG = re.compile(r"<(/?)([^\t\n\v\f\r /<>]*)")
-#: A step up a directory, `..` followed by `/` or `\`, which the firewall refuses in the path and in
-#: a query parameter's value, measured 2026-10-12.
-_TRAVERSAL = re.compile(r"\.\.[/\\]")
+#: A step up a directory as the firewall reads one in the path: `..` followed by `/`, `\` or `;/`,
+#: measured 2026-10-12 and (`..;/`) 2026-10-13. A `..;` with no `/` after it is not refused here;
+#: real answers it further in, with a 400 page that is not copied.
+_PATH_STEP = re.compile(r"\.\.(?:;?/|\\)")
+#: The same in a query parameter's value, where the firewall reads less: `../` anywhere and `..\`
+#: only at the end of the value (`?x=..%5C` refused, `?x=..%5Cy` served), measured 2026-10-13.
+_QUERY_STEP = re.compile(r"\.\./|\.\.\\\Z")
 
 
 def _decoded_twice(text: str) -> str:
@@ -1018,9 +1041,9 @@ def waf_blocks(raw_path: str, raw_query: str) -> bool:
 
     What is copied is the part of it a table can hold, measured 2026-10-12 on both products: a tag
     :data:`_WAF_TAGS` names in the path, read after two percent-decodings and with HTML entities
-    resolved, and a step up a directory (:data:`_TRAVERSAL`) in the path or in a query parameter's
-    value, read after the two percent-decodings alone. The firewall refuses more than this table
-    holds; a request it would refuse on other grounds reaches the routes here.
+    resolved, and a step up a directory in the path (:data:`_PATH_STEP`) or in a query parameter's
+    value (:data:`_QUERY_STEP`), read after the two percent-decodings alone. The firewall refuses
+    more than this table holds; a request it would refuse on other grounds reaches the routes here.
     """
     path = _resolve_entities(_decoded_twice(raw_path))
     for match in _TAG.finditer(path):
@@ -1028,13 +1051,13 @@ def waf_blocks(raw_path: str, raw_query: str) -> bool:
         if closing:
             if name == "script":
                 return True
-        elif name in _WAF_TAGS or name.startswith(_WAF_TAG_PREFIXES) or name == "!doctype":
+        elif name in _WAF_TAGS or name.startswith(_WAF_TAG_PREFIXES):
             return True
-    if _TRAVERSAL.search(_decoded_twice(raw_path)):
+    if _PATH_STEP.search(_decoded_twice(raw_path)):
         return True
     for parameter in raw_query.split("&"):
         name, eq, value = parameter.partition("=")
-        if eq and _TRAVERSAL.search(_decoded_twice(value)):
+        if eq and _QUERY_STEP.search(_decoded_twice(value)):
             return True
     return False
 
@@ -1068,8 +1091,11 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     `PATCH` (:data:`GATEWAY_REFUSED`). Behind those, Confluence's Tomcat answers an encoded slash
     anywhere under `/wiki/` with 400, for every method, every credential and the `Accept` values
     `*/*`, `application/json`, `application/xml` and none, where Jira decodes one and routes the
-    decoded path. Each layer's answer is the same whatever the credential, and the gateway's
-    Connect-token 403 comes after all of them.
+    decoded path; an encoded backslash is the same 400 (2026-10-13). `/wiki/spaces/` is the
+    exception, the web app's own pages, which answered both with 200 (2026-10-13). Each layer's
+    answer is the same whatever the credential, and the gateway's Connect-token 403 comes after all
+    of them. Which product a path is the gateway's to decide, and it reads the path with each run of
+    slashes as one: `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -1091,14 +1117,20 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     if waf_blocks(raw_path, raw_query):
         page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
         return FrontDoor(403, "cdn edge", "text/html", page, {})
-    confluence = raw_path == WIKI or raw_path.startswith(f"{WIKI}/")
+    collapsed = re.sub(r"/{2,}", "/", raw_path)
+    confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
     if method in GATEWAY_REFUSED:
         status, phrase, server = (
             (405, "Not Allowed", "openresty") if confluence else (400, "Bad Request", "nginx")
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
-    if raw_path.startswith(f"{WIKI}/") and "%2f" in raw_path.lower():
+    encoded = collapsed.lower()
+    if (
+        collapsed.startswith(f"{WIKI}/")
+        and not collapsed.startswith(f"{WIKI}/spaces/")
+        and ("%2f" in encoded or "%5c" in encoded)
+    ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, TOMCAT_BAD_REQUEST, {"Content-Language": "en"}
         )
