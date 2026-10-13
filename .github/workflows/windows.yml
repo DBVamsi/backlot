@@ -44,7 +44,11 @@ jobs:
           tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py tests/test_packaging.py
       - name: The tests marked xfail, which still fail here
         if: github.event_name == 'push' || github.event_name == 'pull_request'
-        run: uv run --no-sync pytest -rxs -o addopts= -m xfail tests
+        # pytest exits 5 when the selection is empty, which is where this ends once the last mark
+        # is removed; that is not a failure.
+        run: |
+          uv run --no-sync pytest -rxs -o addopts= -m xfail tests
+          if ($LASTEXITCODE -eq 5) { exit 0 }
       - name: The whole suite
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: uv run --no-sync pytest -rs
