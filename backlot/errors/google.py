@@ -17,8 +17,9 @@ envelope is NOT uniform — three families differ in which optional members they
     Sheets v4               | $.xgafv=1        | always
 
 A request that carries no credential is refused by operation rather than by family: the 403 of an
-unregistered caller on the operations that also take an API key, and the 401 of a missing credential
-on the rest (:func:`no_credentials`). One whose credential does not resolve is the 401 of
+unregistered caller on the operations that also take an API key, the 401 of a missing credential on
+the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key
+(:func:`missing_api_key`). One whose credential does not resolve is the 401 of
 :func:`bad_token` in every family, which is why a missing credential and a bad token are separate
 constructors here rather than one "unauthorized". What counts as a credential is
 ``routers.google._credential``'s to say.
@@ -510,8 +511,8 @@ def missing_credentials() -> GoogleError:
 
 
 def unregistered_caller() -> GoogleError:
-    """No credential, on an operation that also takes an API key (:func:`no_credentials`): a caller
-    with no established identity rather than one missing a credential. It carries no
+    """No credential where the operation also takes an API key (:func:`no_credentials`). The caller
+    has no established identity, rather than missing a credential, and the answer carries no
     `WWW-Authenticate`."""
     return GoogleError(
         403, UNREGISTERED_CALLER_MESSAGE, reason="forbidden", status="PERMISSION_DENIED"
@@ -614,9 +615,9 @@ def download_credential_refused() -> GoogleError:
 
     Measured 2026-10-11 on `files.get?alt=media` and `files.export`, each sent on its own:
     `bearer nope`, `Basic YWJjOmRlZg==`, a bare `Bearer` and `nope` each answered this, and on
-    2026-10-13 an `Authorization` whose value is empty did too, where no header at all is
-    :func:`missing_api_key`'s 403 and `Bearer nope` the front end's own 401. It stands where that
-    403 does among the download's refusals, after its parameters."""
+    2026-10-13 an `Authorization` whose value is empty did too, where no header at all is the
+    missing API key's 403 and `Bearer nope` the front end's own 401. Its place among the download's
+    refusals is :func:`missing_api_key`'s to say."""
     return GoogleError(
         401,
         "Invalid Credentials",

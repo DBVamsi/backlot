@@ -2441,7 +2441,7 @@ def test_no_google_baseline_acknowledges_the_system_parameter_any_more():
 # `errors.google._UNREGISTERED_CALLER_OPERATIONS` records), and what the admin token gets on the
 # same request, which on an operation Backlot does not serve is the 404 or 405 the path gets with
 # no operation to run (`routers.google.refuse_an_unserved_operation`); None where that answer is
-# not this test's. A code of 405 is the router's, whatever the credential.
+# not this test's. A code of 404 or 405 is the router's, whatever the credential.
 # fmt: off
 _NO_CREDENTIAL_ROWS = [
     ("GET", "/drive/v3/files", 403, 200),
@@ -2483,6 +2483,9 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/gmail/v1/users/me/drafts", 401, 404),
     ("DELETE", "/gmail/v1/users/me/messages/abc123", 401, 405),
     ("POST", "/gmail/v1/users/me/labels", 401, 405),
+    # an escaped slash stays inside its segment (`routers.google._operation_path`)
+    ("GET", "/drive/v3/files/abc%2Fpermissions", 403, 404),
+    ("POST", "/drive/v3/files/{doc}%2Fcopy", 404, 404),
     # no operation Google publishes: the router's 405 whatever the credential, where real answered
     # its front end's HTML 404
     ("PUT", "/gmail/v1/users/me/profile", 405, 405),
@@ -2500,10 +2503,10 @@ def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, 
     url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
     body = _A1_FILTER if method in ("POST", "PATCH") else None
     r = client.request(method, url, json=body)
-    if code == 405:
+    if code in (404, 405):
         for headers in (BAD_TOKEN, admin_h):
-            assert client.request(method, url, json=body, headers=headers).status_code == 405
-        assert r.status_code == 405, r.text
+            assert client.request(method, url, json=body, headers=headers).status_code == code
+        assert r.status_code == code, r.text
         return
     assert r.status_code == code, r.text
     e = _gerr(r)
@@ -2525,10 +2528,9 @@ def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, 
 _SERVED = "served"  # the read's own 200
 _NONE = "none"  # the operation's answer to no credential at all
 
-# An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it on
-# Gmail's `labels.get` and Drive's `files.list`, as ``routers.google._credential`` records: the
-# read's 200, the bad token's 401 under either challenge (`_CHALLENGED`, `_CHALLENGE`), or what no
-# credential gets.
+# An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it
+# on the two reads below, as ``routers.google._credential`` records: the read's 200, the bad token's
+# 401 under either challenge (`_CHALLENGED`, `_CHALLENGE`), or what no credential gets.
 # fmt: off
 _CREDENTIAL_ROWS = [
     ("Bearer {t}", _SERVED), ("OAuth {t}", _SERVED), ("Bearer  {t}", _SERVED),
@@ -2537,7 +2539,7 @@ _CREDENTIAL_ROWS = [
     ("Bearer nope", _CHALLENGED), ("OAuth nope", _CHALLENGED), ("Bearer x {t}", _CHALLENGED), ("Bearer {t};x", _CHALLENGED),
     ('Bearer {t}"', _CHALLENGED), ("Bearer nope x", _CHALLENGED),
     ("Bearer{t}", _CHALLENGE), ("Bearer\t{t}", _CHALLENGE), ("Bearers {t}", _CHALLENGE),
-    ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE),
+    ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE), ("OAuth2 {t}", _CHALLENGE),
     ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
     ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
     ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
@@ -2571,8 +2573,9 @@ _DENIED = "Delegation denied for mia@acme.com"
 _NOT_AN_ADDRESS = "Invalid user id specified in request/Delegation denied"
 
 # A Gmail request per row as a user's token sends it, `{u}` the mailbox the path names: the user,
-# the `userId`, the rest of the path and its query, and the status and message real answered, as
-# ``routers.google._refuse_another_mailbox`` records, None where the message is not a refusal's.
+# the `userId`, the rest of the path and its query, and the status and message real answered (the
+# admin row aside), as ``routers.google._refuse_another_mailbox`` records, None where the message
+# is not a refusal's.
 # fmt: off
 _MAILBOX_ROWS = [
     ("mia", "me", "profile", 200, None),
@@ -2603,7 +2606,7 @@ _MAILBOX_ROWS = [
     ("mia", "someone@example.com", "messages/zzz", 403, _DENIED),
     ("mia", "someone@example.com", "messages?maxResults=0", 403, _DENIED),
     ("mia", "someone@example.com", "messages?pageToken=zzz", 403, _DENIED),
-    # the admin token, a domain-wide-delegated service account, reads any mailbox
+    # the admin token reads any mailbox (`_refuse_another_mailbox` says what it stands for)
     ("admin", "someone@example.com", "profile", 200, None),
 ]
 # fmt: on

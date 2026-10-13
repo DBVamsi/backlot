@@ -22,6 +22,7 @@ from email.utils import formataddr, getaddresses
 from http import HTTPStatus
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -282,22 +283,11 @@ def _credential(request: Request) -> tuple[bool, str | None]:
     is a credential that names no token; a scheme with nothing but spaces and tabs after it, a
     scheme in another case and anything else are no credential at all. Measured on 2026-10-11
     against Drive (`files.list` and `about`), Sheets, Docs, Slides and Gmail, with a token that
-    resolves (`<t>`) and with `nope`, and the last two rows of the middle column on Gmail and on
-    Drive's `files.list` on 2026-10-12::
+    resolves and with `nope`, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists
+    replayed on Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
 
-        served                    a credential that fails      no credential
-        ------------------------|----------------------------|------------------------------
-        Bearer <t>              | Bearer nope, OAuth nope    | bearer <t>, BEARER <t>
-        OAuth <t>               | Bearer x <t>, Bearer <t>;x | oauth <t>, OAUTH <t>
-        Bearer  <t>             | Bearer <t>"                | token <t>, Token <t>, MAC <t>
-        Bearer <TAB><t>         | Bearer<t>                  | Basic Zm9vOmJhcg==, <t>
-        Bearer <t> x            | Bearer<TAB><t>             | Bearer, OAuth
-        Bearer <t>,x            | Bearers <t>, OAuth2 <t>    |
-        Bearer ,<t>             | Bearer ,  (and OAuth ,)    |
-
-    A Drive download and a batch part read the header this way too, ahead of their own refusals;
-    which spellings were sent there is `_require_download_bearer`'s and `_drive_batch_redirect`'s
-    to say."""
+    A Drive download and a batch part read the header this way too (`_require_download_bearer`,
+    `_drive_batch_redirect`)."""
     value = request.headers.get("authorization") or ""
     for scheme in _SCHEMES:
         if value.startswith(scheme):
@@ -308,6 +298,22 @@ def _credential(request: Request) -> tuple[bool, str | None]:
                 return True, None
             return True, _TOKEN_END.split(rest.lstrip(" \t,"), maxsplit=1)[0] or None
     return False, None
+
+
+_ESCAPED_SLASH = re.compile(r"%2F", re.I)
+
+
+def _operation_path(request: Request) -> str:
+    """The path real chooses a Google operation by: the path as sent with an escaped `/` kept inside
+    its segment, every other escape decoded, and the trailing slashes dropped. Measured 2026-10-13
+    on Drive with no credential: `files/abc%2Fpermissions` is `files.get`'s 403, and a `POST` to
+    `files/abc%2Fcopy` is the front end's HTML 404 whatever the credential, no operation being a
+    `POST` on a file. The routes match the decoded path, so a credential that resolves reaches the
+    route that path names."""
+    raw = request.scope.get("raw_path")
+    if not raw:
+        return request.scope["path"]
+    return unquote(_ESCAPED_SLASH.sub("%252F", raw.decode("latin-1"))).rstrip("/")
 
 
 def _require(request: Request, *, download: bool = False) -> Caller:
@@ -328,7 +334,7 @@ def _require(request: Request, *, download: bool = False) -> Caller:
             raise gerr.download_credential_refused()
         if download:
             raise gerr.missing_api_key()
-        raise gerr.no_credentials(request.scope["path"], request.method)
+        raise gerr.no_credentials(_operation_path(request), request.method)
     caller = auth.acl(request).resolve(token) if token is not None else None
     if caller is None:
         raise gerr.bad_token(named=token is not None)
@@ -386,9 +392,8 @@ def refuse_an_unserved_operation(request: Request) -> None:
     Measured 2026-10-11 on each of the 147 operations, with no `Authorization` and with
     `Bearer nope`, and on eight of them beside an unknown `$.xgafv`, `$.xgafv=1`, a callable
     `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused as a
-    served route of the same method does. ``backlot.main`` asks this of a Google path that no route
-    serves under its method, with the path's trailing slashes already gone."""
-    path = request.scope["path"]
+    served route of the same method does. The operation is chosen on :func:`_operation_path`."""
+    path = _operation_path(request)
     if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
         return
     gerr.validate_system_parameters(request)
@@ -775,14 +780,14 @@ def _by_thread(rows) -> list:
 
 def _gmail_max_results(request: Request) -> list[int]:
     """Every `maxResults` the request sends, each read as Gmail's proto layer reads it, a uint32
-    (:func:`_gmail_uint32`). A listing reads them ahead of :func:`_refuse_another_mailbox`, where
-    real refuses one it cannot read; what the method makes of them is :func:`_gmail_page`'s."""
+    (:func:`_gmail_uint32`). Where that refusal stands is :func:`_refuse_another_mailbox`'s to say.
+    What the method makes of the values is :func:`_gmail_page`'s."""
     return _typed_query(request, {"maxResults": _gmail_uint32})["maxResults"]
 
 
 def _gmail_page(request: Request, listing: str, sizes: list[int]) -> tuple[int, int]:
     """The page size and offset `messages.list` and `threads.list` serve from the `maxResults`
-    values :func:`_gmail_max_results` read, refused in the order real refuses them on each.
+    values in ``sizes``, refused in the order real refuses them on each.
 
     Measured on gmail.googleapis.com on 2026-10-07 with a Workspace user's `gmail.readonly` token,
     one request per row; `threads.list` answered every row with the same status and error, on
@@ -798,7 +803,7 @@ def _gmail_page(request: Request, listing: str, sizes: list[int]) -> tuple[int, 
     is 500". With no `maxResults`, the page is the default size capped at 500. A sent value is also
     capped at the deployment's `max_page_size`.
 
-    The uint32 refusal comes first on both listings, ahead of the mailbox check too. After it
+    The uint32 refusal (:func:`_gmail_max_results`) comes first on both listings. After it
     `messages.list` refuses a `pageToken` that does not parse (:func:`_gmail_page_token`) before a
     `maxResults` out of range, and `threads.list` the range before the token: measured on 2026-10-09
     with `maxResults` of `0` and `2147483648` beside a token that does not parse, each request sent
