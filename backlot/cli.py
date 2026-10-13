@@ -281,6 +281,10 @@ def serve(
         ),
     ] = None,
     data_dir: DataDir = None,
+    exit_on_stdin_close: Annotated[
+        bool,
+        typer.Option("--exit-on-stdin-close", help="stop serving once stdin reaches end of file"),
+    ] = False,
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
@@ -308,6 +312,8 @@ def serve(
         )
         raise typer.Exit(2)
 
+    if exit_on_stdin_close:
+        _stop_at_stdin_eof()
     import uvicorn
 
     # The app is passed as an import STRING because that is what --reload requires.
@@ -322,6 +328,25 @@ def serve(
         proxy_headers=proxy_headers,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+
+
+def _stop_at_stdin_eof() -> None:
+    """Send this process SIGTERM once its stdin reaches end of file.
+
+    uvicorn answers that SIGTERM with its graceful shutdown: measured on 2026-10-13 on macOS and on
+    Windows 11, the log ended with "Application shutdown complete." and "Finished server process".
+    An end of file that comes before uvicorn has installed its handlers meets SIGTERM's default
+    instead, which on macOS ended the process before it logged a line. A daemon thread waits,
+    reading and dropping anything written, while serving goes on."""
+    import signal
+    import threading
+
+    def wait() -> None:
+        while sys.stdin.buffer.read1(65536):
+            pass
+        signal.raise_signal(signal.SIGTERM)
+
+    threading.Thread(target=wait, name="backlot-stdin-eof", daemon=True).start()
 
 
 # --------------------------------------------------------------------------- import

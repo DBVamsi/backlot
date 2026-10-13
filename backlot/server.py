@@ -146,14 +146,17 @@ def _interpreter(env: dict[str, str]) -> tuple[str, dict[str, str]]:
 
 
 def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
-    """Stop ``proc`` and reap it. A bare ``kill()`` can still leave a zombie if nothing calls
-    ``wait()`` afterward — this always does, even on the SIGTERM-ignoring fallback path."""
+    """Stop ``proc``, reap it, and close the pipe to its stdin if it has one. A bare ``kill()`` can
+    still leave a zombie if nothing calls ``wait()`` afterward — this always does, even on the
+    SIGTERM-ignoring fallback path."""
     proc.terminate()
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+    if proc.stdin is not None:
+        proc.stdin.close()
 
 
 # Every server `serve()` has started and not yet stopped. Between `Popen` returning and the context
@@ -162,88 +165,6 @@ def _terminate(proc: subprocess.Popen, timeout: float = 10) -> None:
 # exactly where a client that gives up on a slow start sends its signal. `stop_children` is the
 # way out of that window; the normal path stays the context manager's own `finally`.
 _CHILDREN: list[subprocess.Popen] = []
-
-
-# The Windows job object every server `serve()` starts is put in, created on first use and never
-# closed by this process: the system closes it when this process ends, however it ends.
-_JOB: int | None = None
-
-
-def _end_with_this_process(proc: subprocess.Popen) -> None:
-    """On Windows, have ``proc`` end when this process does, however this process ends.
-
-    A supervisor ends a process on Windows with ``TerminateProcess``, which runs no handler, so
-    nothing in this process can stop the server on the way out. Measured on 2026-10-13 under Python
-    3.14.0 on Windows 11: ``backlot mcp`` ended with ``Popen.terminate()`` left the server it had
-    started answering on its port ten seconds later, where closing its stdin or a Ctrl+Break took
-    the server down. ``proc`` goes in a job object with ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` whose
-    one handle this process holds; the system closes that handle as this process ends, and the
-    job's processes end with it.
-
-    Elsewhere this does nothing: the server ends with this process when ``serve()`` unwinds or
-    ``stop_children`` runs. Measured on macOS the same day, a process holding ``serve()`` and
-    nothing else took the server down when it exited normally or on SIGINT, and left it answering
-    on SIGTERM, SIGHUP and SIGKILL; ``backlot mcp`` handles SIGTERM and SIGHUP itself, and SIGKILL
-    cannot be handled. A job that cannot be set up costs a line on stderr, not the server."""
-    global _JOB
-    if sys.platform != "win32":
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    class _BasicLimits(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_int64),
-            ("PerJobUserTimeLimit", ctypes.c_int64),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class _ExtendedLimits(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", _BasicLimits),
-            ("IoInfo", ctypes.c_ulonglong * 6),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
-    kernel32.SetInformationJobObject.argtypes = (
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    )
-    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-    job_object_limit_kill_on_job_close = 0x2000
-    job_object_extended_limit_information = 9
-    if _JOB is None:
-        job = kernel32.CreateJobObjectW(None, None)
-        limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = job_object_limit_kill_on_job_close
-        if not job or not kernel32.SetInformationJobObject(
-            job, job_object_extended_limit_information, ctypes.byref(limits), ctypes.sizeof(limits)
-        ):
-            print(
-                f"backlot: the server may outlive this process (WinError {ctypes.get_last_error()})",
-                file=sys.stderr,
-            )
-            return
-        _JOB = job
-    if not kernel32.AssignProcessToJobObject(_JOB, int(proc._handle)):
-        print(
-            f"backlot: the server may outlive this process (WinError {ctypes.get_last_error()})",
-            file=sys.stderr,
-        )
 
 
 def stop_children() -> None:
@@ -400,15 +321,20 @@ def serve(
                     str(port),
                     "--log-level",
                     "warning",
+                    "--exit-on-stdin-close",
                 ],
                 env=server_env,
-                # The server reads nothing from stdin, and must not inherit the caller's: when
-                # the caller is `backlot mcp`, that is the MCP protocol pipe.
-                stdin=subprocess.DEVNULL,
+                # A pipe of this process's own rather than the caller's stdin, which under
+                # `backlot mcp` is the MCP protocol pipe. Nothing is written to it: its write end
+                # closes when this process ends, however it ends, and `--exit-on-stdin-close` stops
+                # the server at that end of file. Measured on 2026-10-13, a process holding
+                # `serve()` and nothing else left the server answering when it ended on SIGTERM,
+                # SIGHUP or SIGKILL on macOS, or by `TerminateProcess` on Windows 11; on this pipe
+                # the server's port closed within a second of each.
+                stdin=subprocess.PIPE,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
             )
-        _end_with_this_process(proc)
         _CHILDREN.append(proc)
         try:
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):

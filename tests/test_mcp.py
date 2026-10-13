@@ -1067,14 +1067,15 @@ def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, 
         pytest.param(
             "SIGHUP", 128 + getattr(signal, "SIGHUP", 0), marks=_POSIX_SIGNALS, id="SIGHUP"
         ),
+        pytest.param("SIGKILL", -getattr(signal, "SIGKILL", 9), marks=_POSIX_SIGNALS, id="SIGKILL"),
         pytest.param("terminate", _TERMINATED, marks=pytest.mark.windows, id="terminate"),
     ],
 )
 def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code):
     """The server `attach` starts goes with the process when a supervisor ends it, not only when
     stdin closes. SIGHUP is the signal whose default disposition would have ended this process
-    instantly with the server left listening, and `terminate()` is the end a Windows supervisor
-    has, the one `_end_with_this_process` covers."""
+    instantly with the server left listening. SIGKILL, and `terminate()` on Windows, run nothing in
+    this process, and the server goes through the stdin pipe it was started on."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"

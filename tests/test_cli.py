@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -403,6 +405,44 @@ def test_no_proxy_headers_is_the_only_way_to_turn_them_off(monkeypatch, a_data_d
     seen = _spy_uvicorn(monkeypatch)
     assert cli.main(["serve", "--no-proxy-headers"]) == 0
     assert seen["proxy_headers"] is False
+
+
+@pytest.mark.parametrize(
+    ("argv", "stops"), [(["serve"], False), (["serve", "--exit-on-stdin-close"], True)]
+)
+def test_serve_stops_at_stdin_eof_only_when_asked(
+    argv, stops, monkeypatch, a_data_dir_with_a_corpus
+):
+    """`--exit-on-stdin-close` sends this process SIGTERM once stdin reaches end of file and not
+    before, from a daemon thread so that the wait cannot hold the process's exit, and a `serve`
+    without it starts no such thread. The stdin is a pipe written to, then closed; the SIGTERM is
+    recorded rather than delivered."""
+    _spy_uvicorn(monkeypatch)
+    sent = []
+    raised = threading.Event()
+    monkeypatch.setattr(signal, "raise_signal", lambda sig: (sent.append(sig), raised.set()))
+    read_end, write_end = os.pipe()
+    writer = open(write_end, "wb")
+    writer.write(b"written while serving\n")
+    writer.flush()
+    stdin = open(read_end, encoding="utf-8")
+    monkeypatch.setattr("sys.stdin", stdin)
+    watchers = []
+    try:
+        assert cli.main(argv) == 0
+        watchers = [t for t in threading.enumerate() if t.name == "backlot-stdin-eof"]
+        assert [t.daemon for t in watchers] == ([True] if stops else [])
+        assert not raised.wait(0.5), "SIGTERM while stdin was still open"
+        writer.close()
+        assert raised.wait(5 if stops else 1) is stops
+        assert sent == ([signal.SIGTERM] if stops else [])
+    finally:
+        # A watcher still reading holds the reader's lock, and must not reach the real
+        # `raise_signal` after this test: end of file first, then wait for it, then close.
+        writer.close()
+        for watcher in watchers:
+            watcher.join(5)
+        stdin.close()
 
 
 @pytest.mark.parametrize(

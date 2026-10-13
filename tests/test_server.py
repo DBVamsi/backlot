@@ -273,12 +273,25 @@ with backlot.serve() as s:
 """
 
 
+_POSIX_SIGNAL = pytest.mark.skipif(
+    sys.platform == "win32", reason="a POSIX signal, which Windows has no separate equivalent of"
+)
+
+
 @pytest.mark.windows
-@pytest.mark.skipif(sys.platform != "win32", reason="a job object is Windows' own")
-def test_the_server_ends_with_a_process_ended_by_terminate_process():
-    """A process holding `serve()` and ended by `Popen.kill()`, which on Windows is
-    `TerminateProcess`, takes its server with it, through the job `_end_with_this_process` puts
-    the server in. On POSIX that `kill()` is a SIGKILL, which the server outlives."""
+@pytest.mark.parametrize(
+    "end",
+    [
+        "kill",
+        pytest.param("SIGTERM", marks=_POSIX_SIGNAL),
+        pytest.param("SIGHUP", marks=_POSIX_SIGNAL),
+    ],
+)
+def test_the_server_ends_with_the_process_that_started_it(end):
+    """A process holding `serve()` that ends without unwinding it takes its server with it, through
+    the stdin pipe `serve()` starts the server on. `kill()` is SIGKILL on POSIX and
+    `TerminateProcess` on Windows; SIGTERM and SIGHUP end a POSIX process by their default
+    disposition."""
     holder = subprocess.Popen(
         [sys.executable, "-c", _HOLDS_A_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE
     )
@@ -286,7 +299,10 @@ def test_the_server_ends_with_a_process_ended_by_terminate_process():
         line = readline_within(holder.stdout, 120)
         assert line, "the process holding serve() printed no URL within 120s"
         url, pid = line.decode().split()
-        holder.kill()
+        if end == "kill":
+            holder.kill()
+        else:
+            holder.send_signal(getattr(signal, end))
         holder.wait(timeout=30)
     finally:
         if holder.poll() is None:
@@ -307,32 +323,31 @@ def test_the_server_ends_with_a_process_ended_by_terminate_process():
 # --------------------------------------------------------------------------- data_dir
 
 
-def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
-    """Both children `serve` starts — the `import` that builds the corpus and the `serve` that
-    answers — get `stdin=DEVNULL`. Under `backlot mcp` the inherited handle would be the MCP
-    protocol pipe, and a child reading from it corrupts a live session while every test that only
-    watches the server's answers stays green. Asserted on the call, since that is the only place
-    the choice is visible from outside the child."""
+def test_serve_owns_its_childrens_stdin(monkeypatch):
+    """Neither child `serve` starts inherits the caller's stdin: the `import` that builds the corpus
+    gets `stdin=DEVNULL`, and the `serve` that answers a pipe of `serve()`'s own, closed once that
+    server has stopped. Under `backlot mcp` the inherited handle would be the MCP protocol pipe,
+    and a child reading from it corrupts a live session while every test that only watches the
+    server's answers stays green. Asserted on the call, since that is the only place the choice is
+    visible from outside the child; the `subprocess.run` that starts the `import` reaches `Popen`
+    too."""
     import backlot.server as server_mod
 
-    seen = []
-    real_popen, real_run = server_mod.subprocess.Popen, server_mod.subprocess.run
+    stdin_of, started = {}, {}
+    real_popen = server_mod.subprocess.Popen
 
     class Popen(real_popen):
-        def __init__(self, *args, **kwargs):
-            seen.append(("Popen", kwargs.get("stdin")))
-            super().__init__(*args, **kwargs)
-
-    def run(*args, **kwargs):
-        seen.append(("run", kwargs.get("stdin")))
-        return real_run(*args, **kwargs)
+        def __init__(self, args, *rest, **kwargs):
+            command = args[args.index("backlot") + 1]
+            stdin_of[command], started[command] = kwargs.get("stdin"), self
+            super().__init__(args, *rest, **kwargs)
 
     monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
-    monkeypatch.setattr(server_mod.subprocess, "run", run)
     with backlot.serve() as s:
         assert s.base_url
-    assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
-    assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+        assert not started["serve"].stdin.closed
+    assert stdin_of == {"import": subprocess.DEVNULL, "serve": subprocess.PIPE}, stdin_of
+    assert started["serve"].stdin.closed
 
 
 @pytest.mark.parametrize(
