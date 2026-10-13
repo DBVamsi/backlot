@@ -298,11 +298,11 @@ def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
 def test_the_server_runs_on_the_interpreter_that_holds_its_files(
     platform, base, starts_on_base, monkeypatch
 ):
-    """In a venv on Windows the server starts on the base interpreter, with `__PYVENV_LAUNCHER__`
-    naming the venv's, so the process `_terminate` stops is the one holding the data dir open
-    (`backlot.server._interpreter` has the measurement); anywhere else it starts on
-    `sys.executable` with the environment unchanged. Asserted on the `Popen` call, which is all a
-    run off Windows can see, with the platform swapped on `backlot.server`'s own view of `sys`."""
+    """The server `serve` starts is the interpreter `backlot.server._interpreter` picks, which is
+    why and where its measurement lives: `sys._base_executable` and a `__PYVENV_LAUNCHER__` of
+    `sys.executable` in a venv on Windows, `sys.executable` and the caller's environment in every
+    other row. Asserted on the `Popen` call, which is all a run off Windows can see, with the
+    platform swapped on `backlot.server`'s own view of `sys`."""
     import backlot.server as server_mod
 
     base = base or sys.executable
