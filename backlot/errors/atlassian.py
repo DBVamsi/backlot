@@ -28,7 +28,7 @@ from typing import NamedTuple
 from urllib.parse import unquote
 from xml.sax.saxutils import escape
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -58,8 +58,8 @@ CONFLUENCE_FORBIDDEN_BODY = json.dumps(
 # What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
 # JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
 # `error` key and nothing else: not this module's envelope, and not Confluence's either, so it is
-# returned as its own body rather than shaped. Measured on ecosystem.atlassian.net and
-# brekkylab.atlassian.net on 2026-09-04.
+# returned as its own body rather than shaped. Measured 2026-09-04, on two sites; the XML it
+# answers instead is :func:`connect_token_answer`.
 CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
 
 
@@ -70,14 +70,13 @@ def connect_token_body() -> dict:
 # What Jira answers a request with no credential it resolves — none, a Basic pair it read and
 # rejected, an unknown scheme, and on an `OPTIONS` an unreadable bearer too — at an operation that
 # will not run anonymously: 401, this line and nothing else, 53 bytes, with
-# `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"` and `X-Frame-Options: SAMEORIGIN`.
-# Jira's own answer, not the gateway's: it carries what ``backlot.routers.atlassian.vendor_headers``
-# puts on Jira's answers and not what that puts on the gateway's own refusals, and an operation's
-# media-type check (:func:`refuse_a_media_type`) answers before it. Which operations those are is
-# ``backlot.routers.atlassian.unmatched_path``'s to say; measured on Jira Cloud, 2026-09-30. The
-# media type follows `Accept` there: `text/html;charset=UTF-8` for `*/*`, the one this server sends
-# whatever `Accept` says, `text/plain` with no `Accept` and `application/json` for
-# `application/json` (on `myself` and `OPTIONS serverInfo`, the same day).
+# `WWW-Authenticate: OAuth realm="<the site, percent-encoded>"`. Jira's own answer, not the
+# gateway's: it carries what ``backlot.routers.atlassian.vendor_headers`` puts on Jira's answers and
+# not what that puts on the gateway's own refusals, and an operation's media-type check
+# (:func:`refuse_a_media_type`) and its `Accept` check (:func:`not_acceptable`) answer before it.
+# Which operations those are is ``backlot.routers.atlassian.unmatched_path``'s to say; measured on
+# Jira Cloud, 2026-09-30. The type the line goes out under is picked from `Accept`
+# (:func:`jira_unauthenticated`).
 JIRA_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 
 # Confluence's second anonymous refusal, which a few of its services give instead of
@@ -167,19 +166,22 @@ class AtlassianError(HTTPException):
     because the body and the header are one measurement: Jira's RFC 7807 body arrives on
     ``application/problem+json``, and serving the body under FastAPI's ``application/json`` would
     reproduce half of it.
+
+    A body of ``bytes`` is not JSON at all and goes out as it stands, with no `content-type` but one
+    ``headers`` names: JAX-RS's empty refusals are that (:func:`rendered`).
     """
 
     def __init__(
         self,
         status_code: int,
-        body: dict,
+        body: dict | bytes,
         *,
         media_type: str | None = None,
         headers: dict[str, str] | None = None,
     ):
         super().__init__(
             status_code=status_code,
-            detail=body.get("detail") or body.get("message"),
+            detail=(body.get("detail") or body.get("message")) if isinstance(body, dict) else None,
             headers=headers,
         )
         self.body = body
@@ -558,7 +560,7 @@ def refuse_a_media_type(
     - ``detail`` names the type as read: type and subtype lower-cased and each parameter as sent
       after a bare `;`, `TEXT/Plain;Charset=UTF-8;X=Y` as `text/plain;Charset=UTF-8;X=Y`
     - `Accept` names ``consumes``, joined by `, `, on every 415; `Accept` on the request changes
-      none of it
+      none of it, though an unreadable one leaves the body out (:func:`rendered`)
     - where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type
       read without one (``scripts/gen_jira_unserved.py`` names the operations, measured 2026-10-12)
 
@@ -602,11 +604,13 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     types does not take, or None where it takes it.
 
     Spring's `errors` list, the shape of :func:`method_not_allowed`'s Confluence 405, with no
-    `Accept`. Measured 2026-10-12 on the attachment writes and `POST space/{key}/permission`: an
-    absent or empty `Content-Type` is named `''`, a type is named as :func:`_parse_media_type` reads
-    it (`APPLICATION/JSON` as `application/json`, `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters
-    kept), and a value with no `/` (`foo`) is refused as no type at all. A value Spring cannot read
-    for another reason is named as sent, the one case the sweep did not cover.
+    `Accept` beside it; Tomcat's page for it names ``consumes`` in one (:func:`confluence_refusal`,
+    measured 2026-10-13). Measured 2026-10-12 on the attachment writes and
+    `POST space/{key}/permission`: an absent or empty `Content-Type` is named `''`, a type is named
+    as :func:`_parse_media_type` reads it (`APPLICATION/JSON` as `application/json`,
+    `TEXT/Plain;Charset=UTF-8;X=Y` with its parameters kept), and a value with no `/` (`foo`) is
+    refused as no type at all. A value Spring cannot read for another reason is named as sent, the
+    one case the sweep did not cover.
     """
     value = headers.get("content-type") or ""
     media_type = _parse_media_type(value) if value else None
@@ -627,7 +631,282 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
                 }
             ]
         },
+        headers={"Accept": ", ".join(consumes)},
     )
+
+
+def _accept(accept: str | None) -> tuple[list[tuple[str, str, list[tuple[str, str]]]], bool]:
+    """The media ranges ``accept`` lists, each `(type, subtype, parameters)` as
+    :func:`_parse_media_type` reads one, and whether a member it cannot read was among them.
+
+    Members are split at commas and a blank one is dropped, so an empty header lists nothing, as an
+    absent one does: the two answered alike on every route measured 2026-10-13.
+    """
+    ranges, unread = [], False
+    for member in (accept or "").split(","):
+        member = member.strip()
+        if not member:
+            continue
+        parsed = _parse_media_type(member)
+        if parsed is None:
+            unread = True
+            continue
+        full, *parameters = parsed.split(";")
+        kind, subtype = full.split("/")
+        ranges.append((kind, subtype, [tuple(p.split("=", 1)) for p in parameters]))
+    return ranges, unread
+
+
+#: What every route of either product answers in, and so what an endpoint produces unless it is
+#: named as producing more (``backlot.routers.atlassian._JIRA_PRODUCES_TEXT``).
+JSON_ONLY = ("application/json",)
+
+
+def accepts(
+    accept: str | None, *, strict: bool, produces: tuple[str, ...] = JSON_ONLY
+) -> bool | None:
+    """Whether ``accept`` admits one of the types an endpoint ``produces``, or None where the
+    service cannot read it.
+
+    Measured 2026-10-13 on `serverInfo`, `myself`, an issue, `POST search/jql`, `space`,
+    `content/{id}` and `search`: no `Accept`, an empty one, `*`, `*/*`, `application/*`,
+    `application/*+json` and `application/json` in any case and under any parameter (`q=0`
+    included) admit JSON, and so does a list holding any of them (`text/html, application/json`, a
+    browser's `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`), where `text/html`,
+    `text/plain`, `text/*`, `text/xml`, `application/xml`, `application/problem+json`,
+    `application/hal+json`, `image/*` and `foo/bar` do not; a ``produces`` naming `text/plain` as
+    well is admitted the same way (``backlot.routers.atlassian._JIRA_PRODUCES_TEXT``). A member
+    with no `/` (`foo`, `*.*`) is one nothing reads. Jira and Confluence's JAX-RS services pass it
+    over and read the rest, so `application/json,*.*;q=0.9` admits JSON there and `*.*` alone is
+    unreadable; Confluence's Spring services, ``strict``, read the whole header as unreadable for
+    it.
+    """
+    ranges, unread = _accept(accept)
+    if unread and (strict or not ranges):
+        return None
+    if not ranges:
+        return True
+    for produced in produces:
+        produced_kind, produced_subtype = produced.split("/")
+        for kind, subtype, _ in ranges:
+            if kind == "*" or (
+                kind == produced_kind
+                and subtype in ("*", produced_subtype, f"*+{produced_subtype}")
+            ):
+                return True
+    return False
+
+
+def _json_family(accept: str | None) -> str | None:
+    """The first type ``accept`` names whose subtype ends `+json`, which a Spring service writes
+    its JSON refusal under where nothing in ``accept`` admits plain JSON
+    (:func:`confluence_refusal`)."""
+    ranges, _ = _accept(accept)
+    return next((f"{k}/{s}" for k, s, _ in ranges if s.endswith("+json")), None)
+
+
+#: The 406 a Confluence Spring service answers in its `errors` list, under a `+json` type `Accept`
+#: names; Tomcat's page is the other shape (:func:`confluence_refusal`).
+CONFLUENCE_NOT_ACCEPTABLE = (
+    "org.springframework.web.HttpMediaTypeNotAcceptableException: "
+    "Could not find acceptable representation"
+)
+
+
+def not_acceptable(
+    path: str, accept: str | None, *, jaxrs: bool = False, produces: tuple[str, ...] = JSON_ONLY
+) -> AtlassianError | None:
+    """The 406 an endpoint at ``path`` answers where ``accept`` admits none of the types it
+    ``produces`` (:func:`accepts`), or None.
+
+    Real asks once the request has reached an endpoint and before the endpoint runs: behind a 405
+    for a method the path does not take and a 415 for a body the endpoint does not read, ahead of
+    Jira's 401 (:data:`JIRA_UNAUTHENTICATED`), Confluence's anonymous 403s, a parameter's 400 and
+    the endpoint's own 200 or 404, and behind the 401 Confluence answers an unreadable Basic with.
+    Measured 2026-10-13 by sending each of those wrong beside `Accept: text/html`; the endpoints
+    that answer it are ``backlot.routers.atlassian``'s to say.
+
+    - Jira: RFC 7807 under :data:`PROBLEM_JSON`, ``detail`` naming ``produces``
+      (`Acceptable representations: [application/json].`) and `Accept` naming them beside it, the
+      request's path in ``instance``
+    - Confluence's Spring services: the `errors` list :func:`confluence_refusal` renders, Tomcat's
+      page for every value measured but a `+json` type
+    - its JAX-RS services (``jaxrs``): no body under no `content-type`
+
+    An unreadable `Accept` is refused as well, its body left out (:func:`rendered`).
+    """
+    if is_confluence(path):
+        if accepts(accept, strict=not jaxrs):
+            return None
+        if jaxrs:
+            return AtlassianError(406, b"")
+        return AtlassianError(
+            406,
+            {
+                "errors": [
+                    {"status": 406, "code": "NOT_ACCEPTABLE", "title": CONFLUENCE_NOT_ACCEPTABLE}
+                ]
+            },
+        )
+    if accepts(accept, strict=False, produces=produces):
+        return None
+    named = ", ".join(produces)
+    return AtlassianError(
+        406,
+        {
+            "type": "about:blank",
+            "title": "Not Acceptable",
+            "status": 406,
+            "detail": f"Acceptable representations: [{named}].",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+        headers={"Accept": named},
+    )
+
+
+#: The headers a Confluence refusal carries on Tomcat's page and in no other shape: the 405's
+#: `Allow` and the 415's `Accept`, measured 2026-10-13 on each shape :func:`confluence_refusal`
+#: names.
+_PAGE_ONLY_HEADERS = ("allow", "accept")
+
+
+def confluence_refusal(
+    status_code: int, body: bytes, accept: str | None, headers: dict[str, str] | None = None
+) -> Response:
+    """A refusal a Confluence Spring service answers, in the shape ``accept`` asks for.
+
+    ``body`` under `application/json` where ``accept`` admits JSON (:func:`accepts`, read
+    strictly), under the first `+json` type it names where it admits none but names one, Tomcat's
+    page for the status (:func:`tomcat_page`) where it names neither, and no body under no
+    `content-type` where it cannot be read. Measured 2026-10-13 with `application/json`,
+    `text/html`, `application/problem+json` or `application/hal+json`, and `foo`, on the 405 (each
+    served route under a method it does not take), the 415 (the attachment writes and
+    `POST space/{key}/permission`), the 406 (:func:`not_acceptable`) and the anonymous 403 of
+    `GET space/{key}/label`.
+    """
+    kept = {k: v for k, v in (headers or {}).items() if k.lower() not in _PAGE_ONLY_HEADERS}
+    takes = accepts(accept, strict=True)
+    if takes is None:
+        return Response(b"", status_code=status_code, headers=kept)
+    media_type = "application/json" if takes else _json_family(accept)
+    if media_type is not None:
+        return Response(body, status_code=status_code, headers={**kept, "Content-Type": media_type})
+    return Response(
+        tomcat_page(status_code),
+        status_code=status_code,
+        headers={**(headers or {}), "Content-Type": TOMCAT_MEDIA_TYPE, "Content-Language": "en"},
+    )
+
+
+def rendered(request, status_code: int, body, headers=None) -> Response | None:
+    """The response for a refusal whose bytes are not its JSON, or None for the ``JSONResponse``
+    around ``body`` every other one gets (``backlot.errors.rendered`` asks).
+
+    A body of ``bytes`` goes out as it stands. A Jira RFC 7807 refusal is an empty
+    `text/html;charset=UTF-8` answer, its `Allow` or `Accept` kept, where no member of `Accept` can
+    be read (:func:`accepts`): `foo` on a 405, the search's 415, the no-endpoint 404 and the 406,
+    measured 2026-10-13, which are the ones such a header reaches. Confluence's `errors` list,
+    on its 405, 406 and 415, is :func:`confluence_refusal`'s.
+    """
+    if isinstance(body, bytes):
+        return Response(body, status_code=status_code, headers=headers)
+    accept = request.headers.get("accept")
+    # the decoded path picks the product only; no rendering here echoes it
+    if is_confluence(request.url.path):
+        if status_code in (405, 406, 415) and isinstance(body.get("errors"), list):
+            encoded = json.dumps(body, separators=(",", ":")).encode()
+            return confluence_refusal(status_code, encoded, accept, headers)
+        return None
+    if body.get("type") == "about:blank" and accepts(accept, strict=False) is None:
+        return Response(
+            b"",
+            status_code=status_code,
+            headers={**(headers or {}), "Content-Type": HTML_MEDIA_TYPE},
+        )
+    return None
+
+
+#: The `Allow` Jira's 401 carries where `Accept` names nothing it can read, and the one its 500
+#: carries where `Accept` names a wildcard it has no type for (:func:`jira_unauthenticated`).
+_JIRA_UNREAD_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH"
+_JIRA_NO_TYPE_ALLOW = "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"
+
+
+def _quality(parameters: list[tuple[str, str]]) -> float:
+    given = next((value for name, value in parameters if name.lower() == "q"), "1")
+    try:
+        return float(given)
+    except ValueError:
+        return 1.0
+
+
+def jira_unauthenticated(accept: str | None) -> tuple[int, str, bytes, dict[str, str]]:
+    """``(status, content-type, body, headers)`` for Jira's 401 (:data:`JIRA_UNAUTHENTICATED`), as
+    real picks them from ``accept``; the `WWW-Authenticate` every one carries is the caller's.
+
+    Measured 2026-10-13 on `OPTIONS serverInfo` with no `Accept` and thirty-seven values, the same
+    on `GET myself` for each value that admits JSON (the 406 answers the others there first):
+
+    - no `Accept`, an empty one, and `*` alone: `text/plain;charset=UTF-8`
+    - a `*/*` anywhere in the list, whatever its `q` (`application/json, */*;q=0.1` and `*/*;q=0`
+      among them): `text/html;charset=UTF-8`, and with it `X-Frame-Options: SAMEORIGIN`
+    - otherwise the member with the highest `q`, the first of those tied, `q=0` counting as any
+      other value does (`application/json;q=0.5, text/plain` and `text/plain, application/json`
+      are both `text/plain`): its type lower-cased, `foo/bar` and `image/png` included, with
+      `;charset=UTF-8` or with the charset the member names, spelled as it spells it and unquoted,
+      the line encoded in it (`utf-16` is 108 bytes behind a byte-order mark); `text/*` is
+      `text/plain` and `application/*` is `application/json`
+    - a wildcard under any other type (`image/*`, `audio/*`, `video/*`, `multipart/*`): a 500 with
+      no body, under `text/html;charset=utf-8`, with `Allow` naming seven methods
+    - a header none of whose members can be read (`foo`, `*.*`, `*/json`): the 401 with no body,
+      under `text/html;charset=UTF-8`, with `Allow` naming eight; a member that cannot be read
+      beside one that can is passed over (`application/json,*.*;q=0.9` is `application/json`)
+    """
+    body = JIRA_UNAUTHENTICATED.encode()
+    members = [member.strip() for member in (accept or "").split(",") if member.strip()]
+    if members in ([], ["*"]):
+        return 401, "text/plain;charset=UTF-8", body, {}
+    ranges, _ = _accept(accept)
+    if not ranges:
+        return 401, HTML_MEDIA_TYPE, b"", {"Allow": _JIRA_UNREAD_ALLOW}
+    if any(kind == "*" for kind, _, _ in ranges):
+        return 401, HTML_MEDIA_TYPE, body, {"X-Frame-Options": "SAMEORIGIN"}
+    best = max(range(len(ranges)), key=lambda i: (_quality(ranges[i][2]), -i))
+    kind, subtype, parameters = ranges[best]
+    if subtype == "*":
+        if kind not in ("text", "application"):
+            return 500, "text/html;charset=utf-8", b"", {"Allow": _JIRA_NO_TYPE_ALLOW}
+        subtype = "plain" if kind == "text" else "json"
+    charset = next((value for name, value in parameters if name.lower() == "charset"), "UTF-8")
+    charset = charset.strip("\"'")
+    if charset.lower() == "utf-16":
+        # Java writes UTF-16 big-endian behind its byte-order mark, where Python's codec would write
+        # the machine's order
+        body = b"\xfe\xff" + JIRA_UNAUTHENTICATED.encode("utf-16-be")
+    else:
+        body = JIRA_UNAUTHENTICATED.encode(charset)
+    headers = {"X-Frame-Options": "SAMEORIGIN"} if (kind, subtype) == ("text", "html") else {}
+    return 401, f"{kind}/{subtype};charset={charset}", body, headers
+
+
+def connect_token_answer(accept: str | None) -> tuple[str, bytes]:
+    """``(content-type, body)`` for the gateway's Connect-token 403: XML where the first member of
+    ``accept`` that names `application/json` or `application/xml`, read whatever its case and
+    parameters, names XML, and the JSON otherwise.
+
+    Measured 2026-10-13 on `serverInfo` with no `Accept` and twenty-eight values: `application/xml`,
+    `APPLICATION/XML`, `application/xml;q=0` and a browser's, which names `application/xml` ahead
+    of its `*/*`, are the 57 bytes of `<error>…</error>` under `application/xml`, and `text/xml`,
+    `application/json, application/xml`, `text/html`, `*/*` and the rest the JSON.
+    """
+    for member in (accept or "").split(","):
+        named = member.split(";", 1)[0].strip().lower()
+        if named == "application/xml":
+            return "application/xml", f"<error>{CONNECT_TOKEN_UNREADABLE}</error>".encode()
+        if named == "application/json":
+            break
+    return "application/json", json.dumps(connect_token_body()).encode()
 
 
 # The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
@@ -797,6 +1076,31 @@ def jira_allow(path: str) -> str | None:
     return None
 
 
+#: The methods each Confluence route here takes, as the `Allow` on its 405's page spells them
+#: (which shapes carry that header is :func:`confluence_refusal`'s). Measured 2026-10-13 under
+#: `Accept: text/html`, with a method each path does not take; real's order changed from one
+#: request to the next (`space` answered `POST, GET` and `GET, POST`), so each row is one spelling
+#: it sent.
+_CONFLUENCE_ALLOW = (
+    ("/wiki/rest/api/space", "GET, POST"),
+    ("/wiki/rest/api/space/{key}", "PUT, DELETE, GET"),
+    ("/wiki/rest/api/space/{key}/permission", "POST"),
+    ("/wiki/rest/api/content", "GET, POST"),
+    ("/wiki/rest/api/content/{id}", "DELETE, GET, PUT"),
+    ("/wiki/rest/api/content/{id}/child/page", "GET"),
+    ("/wiki/rest/api/content/{id}/child/comment", "GET"),
+    ("/wiki/rest/api/content/{id}/child/attachment", "GET, POST, PUT"),
+    ("/wiki/rest/api/content/{id}/label", "GET, POST, DELETE"),
+    ("/wiki/rest/api/content/{id}/restriction/byOperation", "GET"),
+)
+_CONFLUENCE_ALLOW_PATTERNS = tuple((route_regex(t), allow) for t, allow in _CONFLUENCE_ALLOW)
+#: `search` is a JAX-RS service, which answers a method it does not take with no body under no
+#: `content-type` whatever `Accept` asks for, and an `Allow` of its own spelling: measured
+#: 2026-10-13, `POST search` under `text/html` and under `application/json`.
+_CONFLUENCE_SEARCH = "/wiki/rest/api/search"
+_CONFLUENCE_SEARCH_ALLOW = "HEAD,GET,OPTIONS"
+
+
 def method_not_allowed(path: str, method: str) -> AtlassianError:
     """The 405 each product answers for a method it does not serve at ``path``.
 
@@ -806,19 +1110,31 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     ``backlot.routers.atlassian._options_answer``, so neither arrives here.
 
     Neither product answers this refusal in its :func:`http_body` envelope, and they part in two
-    directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807 on
+    directions — Confluence's `errors` is a LIST carrying no `Allow` (Tomcat's page, which an
+    `Accept` admitting no JSON draws, names one: :data:`_CONFLUENCE_ALLOW`), Jira's is RFC 7807 on
     `application/problem+json` naming the methods that path takes (the table above). A client
     reading `errors[0]["code"]` is the one Confluence's shape serves: its envelope has no `errors`
-    at all.
+    at all. Confluence's `search` is neither (:data:`_CONFLUENCE_SEARCH_ALLOW`).
 
-    ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
-    Confluence side. Starlette would compute one there from the catch-all
+    ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on a path
+    no row names. Starlette would compute one there from the catch-all
     (``backlot.routers.atlassian.unmatched_path``), which takes every method it lists on every path
     it owns, so what it would advertise is neither the vendor's set nor anything Backlot serves.
     A method outside :data:`SERVED_METHODS` never arrives here: a layer in front of the application
     answers it first (:func:`front_door`).
     """
     if is_confluence(path):
+        vendor_path = _instance(path).rstrip("/")
+        if vendor_path == _CONFLUENCE_SEARCH:
+            return AtlassianError(405, b"", headers={"Allow": _CONFLUENCE_SEARCH_ALLOW})
+        allow = next(
+            (
+                allow
+                for pattern, allow in _CONFLUENCE_ALLOW_PATTERNS
+                if pattern.fullmatch(vendor_path)
+            ),
+            None,
+        )
         return AtlassianError(
             405,
             {
@@ -833,7 +1149,7 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
                     }
                 ]
             },
-            headers={},
+            headers={} if allow is None else {"Allow": allow},
         )
     allow = jira_allow(path)
     return AtlassianError(
@@ -967,16 +1283,33 @@ _GATEWAY_PATCH_PAGE = (
     "</body>\r\n</html>\r\n"
 )
 
-#: Tomcat's page for a Confluence path carrying an encoded slash, on `text/html;charset=utf-8` with
-#: `Content-Language: en`, measured 2026-10-12 (:func:`front_door`).
-TOMCAT_BAD_REQUEST = (
-    '<!doctype html><html lang="en"><head><title>HTTP Status 400 – Bad Request</title>'
-    '<style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b '
-    "{color:white;background-color:#525D76;} h1 {font-size:22px;} h2 {font-size:16px;} h3 "
-    "{font-size:14px;} p {font-size:12px;} a {color:black;} .line {height:1px;"
-    "background-color:#525D76;border:none;}</style></head><body><h1>HTTP Status 400 – Bad Request"
-    "</h1></body></html>"
+#: The page Confluence's Tomcat answers a refusal with where nothing in `Accept` takes JSON, and
+#: the encoded slash's 400 whatever it takes (:func:`front_door`): the status and its reason in the
+#: title and in `<h1>` and nothing else, on `text/html;charset=utf-8` with `Content-Language: en`.
+#: Measured 2026-10-12 for the 400 and 2026-10-13 for the 403, 405, 406 and 415
+#: (:func:`confluence_refusal`), 431 to 457 bytes.
+_TOMCAT_PAGE = (
+    '<!doctype html><html lang="en"><head><title>HTTP Status {status} – {phrase}</title>'
+    '<style type="text/css">body {{font-family:Tahoma,Arial,sans-serif;}} h1, h2, h3, b '
+    "{{color:white;background-color:#525D76;}} h1 {{font-size:22px;}} h2 {{font-size:16px;}} h3 "
+    "{{font-size:14px;}} p {{font-size:12px;}} a {{color:black;}} .line {{height:1px;"
+    "background-color:#525D76;border:none;}}</style></head><body><h1>HTTP Status {status} – "
+    "{phrase}</h1></body></html>"
 )
+_TOMCAT_PHRASES = {
+    400: "Bad Request",
+    403: "Forbidden",
+    405: "Method Not Allowed",
+    406: "Not Acceptable",
+    415: "Unsupported Media Type",
+}
+
+
+def tomcat_page(status: int) -> str:
+    """Tomcat's page for ``status``, one of the five it was measured for."""
+    return _TOMCAT_PAGE.format(status=status, phrase=_TOMCAT_PHRASES[status])
+
+
 TOMCAT_MEDIA_TYPE = "text/html;charset=utf-8"
 
 
@@ -1100,7 +1433,7 @@ def front_door(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
         return FrontDoor(status, "gateway", "text/html", page, {})
     if raw_path.startswith(f"{WIKI}/") and "%2f" in raw_path.lower():
         return FrontDoor(
-            400, "gateway", TOMCAT_MEDIA_TYPE, TOMCAT_BAD_REQUEST, {"Content-Language": "en"}
+            400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )
     return None
 
@@ -1113,7 +1446,8 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
     (`serverInfo/extra`, `issue/NOPE-1/nope`, `project/search/extra`) each answer this body.
     `detail` names the method as sent -- `GET`, `POST`, `DELETE` and `OPTIONS` each came back in it,
     and `PUT` with no credential on 2026-09-30 -- and both fields carry the vendor path with the
-    query string left off. A credential changes nothing, and neither does `Accept`.
+    query string left off. A credential changes nothing; an `Accept` nothing in which can be read
+    empties the body (:func:`rendered`).
     """
     vendor_path = _instance(path)
     return AtlassianError(
@@ -1131,9 +1465,10 @@ def no_endpoint(path: str, method: str) -> AtlassianError:
 
 #: Confluence's JAX-RS 404 for a segment under `/wiki/rest/api/` that no resource claims. The shape
 #: follows `Accept` rather than the credential: measured 2026-09-22 on `nopesuchroute` and
-#: `nope/deeper/still`, `Accept: application/json` answers the JSON below and every other value --
-#: absent, `*/*`, `application/xml` -- answers the XML, with or without a credential. The message
-#: carries the full request URL, query string included.
+#: `nope/deeper/still`, an `Accept` naming `application/json` answers the JSON below and every other
+#: value -- absent, `*/*`, `application/xml` -- answers the XML, with or without a credential; the
+#: name is read whatever its case (`APPLICATION/JSON`, 2026-10-13). The message carries the full
+#: request URL, query string included.
 JAXRS_XML_MEDIA_TYPE = "application/xml"
 JAXRS_JSON_MEDIA_TYPE = "application/json"
 _JAXRS_MESSAGE = "null for uri: {url}"
@@ -1173,14 +1508,41 @@ HTML_NOT_FOUND = (
     "<body><p>This page could not be found.</p></body></html>"
 )
 
-#: What an `OPTIONS` on a Confluence route answers: the 404 above in the `errors` list its 405 uses,
-#: on every route measured 2026-09-22 but `search`, which answers by `Accept`
-#: (``backlot.routers.atlassian._search_options``). That is for `*/*`, `application/json` or no
-#: `Accept`; `text/html` or `application/xml` is a 403 HTML page there instead, measured on each of
-#: those routes 2026-09-30, which this server does not answer.
+#: What an `OPTIONS` on a Confluence route answers where `Accept` admits JSON: the 404 above in the
+#: `errors` list its 405 uses, on every route measured 2026-09-22 but `search`, which answers by
+#: `Accept` its own way (``backlot.routers.atlassian._search_options``). What the other values draw
+#: is :func:`confluence_options`.
 CONFLUENCE_OPTIONS_NOT_FOUND = {
     "errors": [{"status": 404, "code": "NOT_FOUND", "title": "Not Found"}]
 }
+#: The `Allow` that `OPTIONS` carries where `Accept` cannot be read, measured 2026-10-13.
+_CONFLUENCE_UNREAD_OPTIONS_ALLOW = "GET, HEAD, POST, PUT, DELETE, TRACE, OPTIONS, PATCH"
+
+
+def confluence_options(accept: str | None) -> Response:
+    """What an `OPTIONS` on a Confluence route but `search` answers, by ``accept``.
+
+    The 404 (:data:`CONFLUENCE_OPTIONS_NOT_FOUND`) in the shapes :func:`confluence_refusal` gives a
+    refusal, but for two: an `Accept` naming neither JSON nor a `+json` type draws Tomcat's 403 page
+    in the 404's place, and one that cannot be read the empty 404 with
+    :data:`_CONFLUENCE_UNREAD_OPTIONS_ALLOW`. Measured 2026-10-13 on `space` with no `Accept` and
+    twenty-six values (and `text/html` with a credential too, the same 403), and 2026-09-30 on nine
+    routes with five values each.
+    """
+    takes = accepts(accept, strict=True)
+    if takes is None:
+        return Response(b"", status_code=404, headers={"Allow": _CONFLUENCE_UNREAD_OPTIONS_ALLOW})
+    media_type = "application/json" if takes else _json_family(accept)
+    if media_type is not None:
+        body = json.dumps(CONFLUENCE_OPTIONS_NOT_FOUND, separators=(",", ":")).encode()
+        return Response(body, status_code=404, headers={"Content-Type": media_type})
+    return Response(
+        tomcat_page(403),
+        status_code=403,
+        headers={"Content-Type": TOMCAT_MEDIA_TYPE, "Content-Language": "en"},
+    )
+
+
 CONFLUENCE_OPTIONS_BY_ACCEPT = "/wiki/rest/api/search"
 CONFLUENCE_SEARCH_OPTIONS_ALLOW = "OPTIONS,HEAD,GET"
 
@@ -1199,10 +1561,13 @@ def head_content_length(path: str, status_code: int) -> bool:
     695), and the 404s, the 405 and the CQL 400 declare none. Jira's answers are chunked and
     declare none on either method (2026-09-22), but for the 401 it refuses a caller with no
     credential with (:data:`JIRA_UNAUTHENTICATED`), which declares its 53 bytes, and the `HEAD`
-    beside it declares the same (`myself`, 2026-09-30).
+    beside it declares the same (`myself`, 2026-09-30). Confluence's 406 declares its length
+    (Tomcat's page on `space`, 441 bytes, 2026-10-13).
     """
     if not is_confluence(path):
         return status_code == 401
+    if status_code == 406:
+        return True
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False
     return 200 <= status_code < 300

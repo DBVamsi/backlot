@@ -171,13 +171,14 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
-    # are indented to the byte and a `callback` on a GET answers one at 200 as a script. Asking the
-    # envelope keeps that where the rest of that vendor's error shape lives, and leaves Atlassian
-    # and GitHub with exactly the JSONResponse they had. Measured 2026-09-15, that is right for
-    # both and for different reasons: Jira and Confluence ignore `callback` outright, on an error
-    # and on a success, while GitHub honours it through an envelope of its own — `/**/cb({"meta":
-    # …, "data": …})` under `application/javascript; charset=utf-8`, with the status inside `meta`
-    # and an unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
+    # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
+    # Atlassian refusal is Tomcat's page or no body at all for an `Accept` that takes no JSON.
+    # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
+    # GitHub with exactly the JSONResponse it had. Measured 2026-09-15, `callback` is not why either
+    # of the others asks: Jira and Confluence ignore it outright, on an error and on a success,
+    # while GitHub honours it through an envelope of its own — `/**/cb({"meta": …, "data": …})`
+    # under `application/javascript; charset=utf-8`, with the status inside `meta` and an
+    # unparseable name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
@@ -501,18 +502,20 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     sites on 2026-09-04.
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
-    2026-09-30), and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is
-    refused as its GET is and so carries no `content-length`, as real's did on `serverInfo` and on
-    `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers one with an
-    unreadable bearer as it answers one with none (``backlot.routers.atlassian._options_answer``).
+    2026-09-30), or is the XML ``errors.atlassian.connect_token_answer`` names for an `Accept` that
+    asks for XML first, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
+    `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
+    `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
+    one with an unreadable bearer as it answers one with none
+    (``backlot.routers.atlassian._options_answer``).
     """
     if (
         request.method != "OPTIONS"
         and request.url.path.startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(request)
     ):
-        body = json.dumps(errors.atlassian.connect_token_body())
-        return Response(body, status_code=403, media_type="application/json")
+        media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
+        return Response(body, status_code=403, media_type=media_type)
     return await call_next(request)
 
 

@@ -19,6 +19,7 @@ from starlette.requests import Request
 
 from backlot import store, synth
 from backlot.errors import atlassian as errors_atlassian
+from backlot.routers import atlassian as routers_atlassian
 from tests._helpers import (
     bare_request,
     client_for,
@@ -3752,6 +3753,20 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
         ("/atlassian/wiki/rest/api/space/{space}", "*/*", 404, "application/json"),
         ("/atlassian/wiki/rest/api/content", "*/*", 404, "application/json"),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", "*/*", 404, "application/json"),
+        # what the other values draw (``errors.atlassian.confluence_options``)
+        ("/atlassian/wiki/rest/api/space", None, 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space", "*", 404, "application/json"),
+        ("/atlassian/wiki/rest/api/space", "application/hal+json", 404, "application/hal+json"),
+        ("/atlassian/wiki/rest/api/space", "text/html", 403, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        (
+            "/atlassian/wiki/rest/api/space",
+            "application/xml",
+            403,
+            errors_atlassian.TOMCAT_MEDIA_TYPE,
+        ),
+        ("/atlassian/wiki/rest/api/content", "text/plain", 403, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("/atlassian/wiki/rest/api/space", "foo", 404, None),
+        ("/atlassian/wiki/rest/api/space", "application/json,*.*;q=0.9", 404, None),
         ("/atlassian/wiki/rest/api/search", "*/*", 200, "application/xml"),
         ("/atlassian/wiki/rest/api/search", "application/xml", 200, "application/xml"),
         ("/atlassian/wiki/rest/api/search", None, 200, "application/vnd.sun.wadl+xml"),
@@ -3762,10 +3777,10 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
 def test_confluence_answers_an_options_by_route_and_accept(
     client, admin_h, keys, path, accept, status, media_type
 ):
-    """Pins the Confluence half of ``backlot.routers.atlassian._options_answer``:
-    ``errors.atlassian.CONFLUENCE_OPTIONS_NOT_FOUND`` on each route but `search`, and on `search`
-    what ``backlot.routers.atlassian._search_options`` answers each `Accept`, its three methods
-    every time. The WADL is real's, with this server's origin in its two URLs."""
+    """Pins the Confluence half of ``backlot.routers.atlassian._options_answer``: on each route but
+    `search` what ``errors.atlassian.confluence_options`` answers each `Accept`, and on `search`
+    what ``backlot.routers.atlassian._search_options`` answers it, its three methods every time.
+    The WADL is real's, with this server's origin in its two URLs."""
     request = client.build_request("OPTIONS", path.format(**keys), headers=admin_h)
     if accept is None:
         del request.headers["accept"]
@@ -3773,8 +3788,17 @@ def test_confluence_answers_an_options_by_route_and_accept(
         request.headers["accept"] = accept
     r = client.send(request)
     assert r.status_code == status, r.text
+    if status == 403:
+        assert r.headers["content-type"] == media_type
+        assert r.text == errors_atlassian.tomcat_page(403) and len(r.content) == 431
+        return
+    if status == 404 and media_type is None:
+        assert r.content == b"" and "content-type" not in r.headers
+        assert r.headers["allow"] == "GET, HEAD, POST, PUT, DELETE, TRACE, OPTIONS, PATCH"
+        return
     if status == 404:
-        assert r.json() == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
+        assert r.headers["content-type"] == media_type
+        assert json.loads(r.content) == errors_atlassian.CONFLUENCE_OPTIONS_NOT_FOUND
         return
     assert r.headers["allow"] == errors_atlassian.CONFLUENCE_SEARCH_OPTIONS_ALLOW
     if status == 204:
@@ -4048,6 +4072,8 @@ def test_jira_unserved_sorts_every_operation_no_route_serves():
         # what ``errors.atlassian.jaxrs_not_found`` escapes in the XML; the JSON escapes neither
         ("/atlassian/wiki/rest/api/nope&x'quote", None, "xml", "nope&amp;x'quote"),
         ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
+        # the name is read whatever its case
+        ("/atlassian/wiki/rest/api/nopesuchroute", "APPLICATION/JSON", "json", "nopesuchroute"),
     ],
 )
 def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
@@ -5004,3 +5030,493 @@ def test_jira_columns_415_names_a_charset_the_request_did_not_send(client):
         headers={"Content-Type": "text/plain;charset=ISO-8859-1"},
     )
     assert kept.json()["detail"] == "Content-Type 'text/plain;charset=ISO-8859-1' is not supported."
+
+
+# --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------
+
+_HTML = "text/html"
+_JSON = "application/json"
+_PROBLEM = errors_atlassian.PROBLEM_JSON
+_JIRA_JSON = errors_atlassian.JIRA_JSON_MEDIA_TYPE
+_TOMCAT = errors_atlassian.TOMCAT_MEDIA_TYPE
+_UNREAD_BESIDE_JSON = "application/json,*.*;q=0.9"
+_BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+_INFO = "/atlassian/rest/api/3/serverInfo"
+_SEARCH = "/atlassian/rest/api/3/search/jql"
+_ISSUE_NOPE = "/atlassian/rest/api/3/issue/NOPE-1"
+_SPACES = "/atlassian/wiki/rest/api/space"
+_ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
+_LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
+_CQL = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+#: Tomcat's page by status, as long as real's was (``errors.atlassian.tomcat_page``).
+_TOMCAT_LENGTHS = {403: 431, 405: 449, 406: 441, 415: 457}
+_PRESENT = ...
+
+_ACCEPT_ROWS = [
+    # (method, path, credential, Accept, (content-type, body) sent, status, content-type answered,
+    # body: bytes, a shape below, or None to leave it unread, and headers: a value, `_PRESENT`, or
+    # None for absent)
+    #
+    # -- Jira: a served route, the 406 and the values that pass it
+    (
+        "GET",
+        _INFO,
+        "none",
+        _HTML,
+        None,
+        406,
+        _PROBLEM,
+        b'{"type":"about:blank","title":"Not Acceptable","status":406,"detail":"Acceptable '
+        b'representations: [application/json].","instance":"/rest/api/3/serverInfo"}',
+        {"accept": "application/json", "x-ratelimit-limit": None},
+    ),
+    ("GET", _INFO, "none", _JSON, None, 200, _JIRA_JSON, None, {"accept": None}),
+    ("GET", _INFO, "none", "TEXT/HTML", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "text/xml", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "application/problem+json", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "text/*", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "image/*", None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", "application/*", None, 200, _JIRA_JSON, None, {}),
+    ("GET", "/atlassian/rest/api/2/serverInfo", "none", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", _INFO, "none", None, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "*", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "*/*;q=0", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/*+json", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", "application/json;q=0, text/html", None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", _BROWSER, None, 200, _JIRA_JSON, None, {}),
+    ("GET", _INFO, "none", _UNREAD_BESIDE_JSON, None, 200, _JIRA_JSON, None, {}),
+    # `foo` and `*.*`: the 406 with no body and its `Accept` kept
+    (
+        "GET",
+        _INFO,
+        "none",
+        "foo",
+        None,
+        406,
+        errors_atlassian.HTML_MEDIA_TYPE,
+        b"",
+        {"accept": "application/json"},
+    ),
+    ("GET", _INFO, "none", "*.*", None, 406, errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # a caller whose credential resolves gets its account id and no quota on the 406
+    ("GET", _INFO, "admin", _HTML, None, 406, _PROBLEM, "problem")
+    + ({"x-aaccountid": _PRESENT, "x-ratelimit-limit": None},),
+    ("GET", _INFO, "admin", _JSON, None, 200, _JIRA_JSON, None, {"x-ratelimit-limit": _PRESENT}),
+    ("HEAD", _INFO, "none", _HTML, None, 406, _PROBLEM, b"", {"content-length": None}),
+    # -- Jira: what comes before the 406, and what comes after it
+    ("GET", _INFO, "unreadable-bearer", _HTML, None, 403, _JSON, None, {}),
+    ("DELETE", _INFO, "none", _HTML, None, 405, _PROBLEM, None, {"allow": "GET"}),
+    ("DELETE", _INFO, "none", "foo", None, 405, errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    ("POST", _SEARCH, "admin", _HTML, ("text/plain", b"x"), 415, _PROBLEM, None, {}),
+    (
+        "POST",
+        _SEARCH,
+        "admin",
+        "foo",
+        ("text/plain", b"x"),
+        415,
+        "text/html;charset=UTF-8",
+        b"",
+        {},
+    ),
+    ("POST", _SEARCH, "admin", _HTML, (_JSON, b""), 406, _PROBLEM, "problem", {}),
+    ("POST", _SEARCH, "admin", _JSON, (_JSON, b""), 400, _JIRA_JSON, None, {}),
+    ("GET", _ISSUE_NOPE, "admin", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", _ISSUE_NOPE, "admin", _JSON, None, 404, _JIRA_JSON, None, {}),
+    ("GET", "/atlassian/rest/api/3/issue/NOPE-1/comment?startAt=x", "none", _HTML, None, 406)
+    + (_PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/issue/NOPE-1/comment?startAt=x", "none", _JSON, None, 400)
+    + (_PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _HTML, None, 404, _PROBLEM, None, {}),
+    ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", "foo", None, 404)
+    + (errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # -- Jira: a published operation with no route of its own (``_published_answer``)
+    ("GET", "/atlassian/rest/api/3/myself", "none", _HTML, None, 406, _PROBLEM, "problem")
+    + ({"www-authenticate": None},),
+    ("GET", "/atlassian/rest/api/3/myself", "none", _JSON, None, 401)
+    + ("application/json;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
+    ("PUT", _ISSUE_NOPE, "none", _HTML, (_JSON, b"{}"), 406, _PROBLEM, "problem", {}),
+    ("PUT", _ISSUE_NOPE, "none", _JSON, (_JSON, b"{}"), 404, _JIRA_JSON, None, {}),
+    ("PUT", _ISSUE_NOPE, "none", _HTML, None, 415, _PROBLEM, None, {"accept": "application/json"}),
+    ("POST", "/atlassian/rest/api/3/issue", "none", _HTML, ("text/plain", b"x"), 415, _PROBLEM)
+    + (None, {}),
+    ("POST", "/atlassian/rest/api/3/issue", "none", _HTML, None, 406, _PROBLEM, "problem", {}),
+    ("GET", "/atlassian/rest/api/3/mypreferences", "none", "text/plain", None, 401)
+    + ("text/plain;charset=UTF-8", None, {}),
+    ("GET", "/atlassian/rest/api/3/mypreferences", "none", _HTML, None, 406, _PROBLEM)
+    + ("problem, text/plain", {"accept": "application/json, text/plain"}),
+    ("GET", "/atlassian/rest/api/2/mypreferences", "none", _HTML, None, 406, _PROBLEM)
+    + ("problem, text/plain", {}),
+    ("GET", "/atlassian/rest/api/3/license/approximateLicenseCount", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {}),
+    ("OPTIONS", _INFO, "none", _HTML, None, 401, "text/html;charset=UTF-8", None, {}),
+    # -- Confluence: a Spring route's 406 in each of its shapes, and the values that pass it
+    ("GET", _SPACES, "none", _HTML, None, 406, _TOMCAT, "page", {"content-language": "en"}),
+    ("GET", _SPACES, "none", "application/problem+json", None, 406)
+    + ("application/problem+json", "errors", {}),
+    ("GET", _SPACES, "none", "application/hal+json", None, 406)
+    + ("application/hal+json", "errors", {}),
+    ("GET", _SPACES, "none", "foo", None, 406, None, b"", {}),
+    ("GET", _SPACES, "none", _UNREAD_BESIDE_JSON, None, 406, None, b"", {}),
+    ("GET", _SPACES, "none", "application/*+json", None, 403, _JSON, None, {}),
+    ("GET", _SPACES, "none", None, None, 403, _JSON, None, {}),
+    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None, {}),
+    ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
+    + ({"deprecation": None},),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _JSON, None, 404, _JSON, None)
+    + ({"deprecation": _PRESENT},),
+    ("HEAD", _SPACES, "none", _HTML, None, 406, _TOMCAT, b"", {"content-length": "441"}),
+    # -- Confluence: a JAX-RS service's 406, and the ones the catch-all answers
+    ("GET", _CQL, "none", _HTML, None, 406, None, b"", {"expires": None}),
+    ("GET", _CQL, "none", _UNREAD_BESIDE_JSON, None, 403, _JSON, None, {"expires": _PRESENT}),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _HTML, None, 406, None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/audit", "none", _JSON, None, 403, _JSON, None, {}),
+    ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/1", "none", _HTML, None, 406)
+    + (None, b"", {}),
+    ("GET", "/atlassian/wiki/rest/api/content/1/history", "none", _HTML, None, 406, _TOMCAT)
+    + ("page", {}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1", "none", _HTML, (_JSON, b"{}"), 406, _TOMCAT)
+    + ("page", {}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1", "none", _JSON, (_JSON, b"{}"), 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("POST", "/atlassian/wiki/rest/api/content", "none", _JSON, ("text/plain", b"x"), 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("DELETE", "/atlassian/wiki/rest/api/content/1", "none", _JSON, None, 403, _JSON)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    # the one operation whose anonymous refusal takes the shape `Accept` asks for in its place
+    ("GET", _LABEL, "none", _HTML, None, 403, _TOMCAT, "page", {}),
+    (
+        "GET",
+        _LABEL,
+        "none",
+        _JSON,
+        None,
+        403,
+        _JSON,
+        errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        {},
+    ),
+    ("GET", _LABEL, "none", "application/problem+json", None, 403, "application/problem+json")
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY, {}),
+    ("GET", _LABEL, "none", "foo", None, 403, None, b"", {}),
+    # -- Confluence: a 405 and a 415 in the shape `Accept` asks for
+    ("DELETE", _SPACES, "none", _HTML, None, 405, _TOMCAT, "page", {"allow": "GET, POST"}),
+    ("DELETE", _SPACES, "none", _JSON, None, 405, _JSON, None, {"allow": None}),
+    ("DELETE", _SPACES, "none", "application/problem+json", None, 405)
+    + ("application/problem+json", None, {"allow": None}),
+    ("DELETE", _SPACES, "none", "foo", None, 405, None, b"", {"allow": None}),
+    ("GET", f"{_SPACES}/{{space}}/permission", "admin", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "POST"},),
+    # each route's `Allow` on the page (``errors.atlassian._CONFLUENCE_ALLOW``)
+    ("POST", f"{_SPACES}/{{space}}", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "PUT, DELETE, GET"},),
+    ("DELETE", "/atlassian/wiki/rest/api/content", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST"},),
+    ("POST", "/atlassian/wiki/rest/api/content/1", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "DELETE, GET, PUT"},),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/child/page", "none", _HTML, None, 405, _TOMCAT)
+    + ("page", {"allow": "GET"}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/child/comment", "none", _HTML, None, 405, _TOMCAT)
+    + ("page", {"allow": "GET"}),
+    ("DELETE", _ATTACH, "none", _HTML, None, 405, _TOMCAT, "page", {"allow": "GET, POST, PUT"}),
+    ("PUT", "/atlassian/wiki/rest/api/content/1/label", "none", _HTML, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST, DELETE"},),
+    ("POST", "/atlassian/wiki/rest/api/content/1/restriction/byOperation", "none", _HTML, None)
+    + (405, _TOMCAT, "page", {"allow": "GET"}),
+    ("POST", _ATTACH, "none", _HTML, ("text/plain", b"x"), 415, _TOMCAT, "page")
+    + ({"accept": "multipart/form-data"},),
+    ("POST", _ATTACH, "none", _JSON, ("text/plain", b"x"), 415, _JSON, None, {"accept": None}),
+    ("POST", _ATTACH, "none", "application/hal+json", ("text/plain", b"x"), 415)
+    + ("application/hal+json", None, {"accept": None}),
+    ("POST", _ATTACH, "none", "foo", ("text/plain", b"x"), 415, None, b"", {"accept": None}),
+    # `search`'s own 405, which no Accept changes
+    ("POST", "/atlassian/wiki/rest/api/search", "none", _JSON, None, 405, None, b"")
+    + ({"allow": "HEAD,GET,OPTIONS"},),
+    ("POST", "/atlassian/wiki/rest/api/search", "none", _HTML, None, 405, None, b"")
+    + ({"allow": "HEAD,GET,OPTIONS"},),
+]
+
+_ACCEPT_CREDENTIALS = {
+    "none": {},
+    "unreadable-bearer": {"Authorization": "Bearer nope"},
+    "unparseable-basic": {"Authorization": "Basic !!!"},
+}
+
+
+def _accept_body(shape, status: int, vendor_path: str) -> bytes:
+    """The body a row of :data:`_ACCEPT_ROWS` names by its shape."""
+    if shape == "page":
+        return errors_atlassian.tomcat_page(status).encode()
+    if shape == "errors":
+        return json.dumps(
+            {
+                "errors": [
+                    {
+                        "status": 406,
+                        "code": "NOT_ACCEPTABLE",
+                        "title": errors_atlassian.CONFLUENCE_NOT_ACCEPTABLE,
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode()
+    named = "application/json" + (", text/plain" if shape == "problem, text/plain" else "")
+    return json.dumps(
+        {
+            "type": "about:blank",
+            "title": "Not Acceptable",
+            "status": 406,
+            "detail": f"Acceptable representations: [{named}].",
+            "instance": vendor_path,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    "method,path,credential,accept,sent,status,media_type,body,headers", _ACCEPT_ROWS
+)
+def test_atlassian_answers_an_accept_where_and_as_real_does(
+    client, admin_h, keys, method, path, credential, accept, sent, status, media_type, body, headers
+):
+    """Pins the 406 (``errors.atlassian.not_acceptable``) where each product answers it, the
+    refusals that come before it and after it
+    (``backlot.routers.atlassian._checked_before_the_route`` and
+    ``backlot.routers.atlassian._published_answer``), and the shape a refusal takes from
+    `Accept` (``errors.atlassian.rendered``, ``errors.atlassian.confluence_refusal``). A refusal's
+    row sits beside the same URL's answer to an `Accept` that passes, which is what shows the
+    order."""
+    path = path.format(**keys)
+    request = client.build_request(
+        method,
+        path,
+        headers=admin_h if credential == "admin" else _ACCEPT_CREDENTIALS[credential],
+        content=None if sent is None else sent[1],
+    )
+    if accept is None:
+        del request.headers["accept"]
+    else:
+        request.headers["accept"] = accept
+    if sent is not None:
+        request.headers["content-type"] = sent[0]
+    r = client.send(request)
+    assert r.status_code == status, r.text
+    assert r.headers.get("content-type") == media_type
+    if isinstance(body, str):
+        body = _accept_body(body, status, path.split("?")[0][len("/atlassian") :])
+        if status in _TOMCAT_LENGTHS and media_type == _TOMCAT:
+            assert len(body) == _TOMCAT_LENGTHS[status]
+    if body is not None:
+        assert r.content == body
+    for name, value in headers.items():
+        if value is None:
+            assert name not in r.headers, name
+        elif value is _PRESENT:
+            assert name in r.headers, name
+        else:
+            assert r.headers[name] == value, name
+
+
+@pytest.mark.parametrize(
+    "method,accept,status,media_type,line,headers",
+    [
+        # (the 401's status, content-type, whether the line is its body, and headers beside it)
+        ("OPTIONS", None, 401, "text/plain;charset=UTF-8", True, {"x-frame-options": None}),
+        ("OPTIONS", "", 401, "text/plain;charset=UTF-8", True, {}),
+        ("OPTIONS", "*", 401, "text/plain;charset=UTF-8", True, {}),
+        ("OPTIONS", "*/*", 401, "text/html;charset=UTF-8", True, {"x-frame-options": "SAMEORIGIN"}),
+        ("OPTIONS", "*/*;q=0", 401, "text/html;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/json, */*;q=0.1", 401, "text/html;charset=UTF-8", True, {}),
+        ("OPTIONS", _BROWSER, 401, "text/html;charset=UTF-8", True, {}),
+        (
+            "OPTIONS",
+            "text/html",
+            401,
+            "text/html;charset=UTF-8",
+            True,
+            {"x-frame-options": _PRESENT},
+        ),
+        ("OPTIONS", "TEXT/HTML", 401, "text/html;charset=UTF-8", True, {}),
+        ("OPTIONS", _JSON, 401, "application/json;charset=UTF-8", True, {"x-frame-options": None}),
+        ("OPTIONS", "APPLICATION/JSON", 401, "application/json;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/*", 401, "application/json;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/json;q=0", 401, "application/json;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/json;charset=utf-8", 401, "application/json;charset=utf-8", True)
+        + ({},),
+        ("OPTIONS", 'application/json;charset="utf-8"', 401, "application/json;charset=utf-8", True)
+        + ({},),
+        ("OPTIONS", "application/json;charset=ISO-8859-1", 401)
+        + ("application/json;charset=ISO-8859-1", True, {}),
+        (
+            "OPTIONS",
+            "application/json, text/plain",
+            401,
+            "application/json;charset=UTF-8",
+            True,
+            {},
+        ),
+        ("OPTIONS", "text/plain, application/json", 401, "text/plain;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", True)
+        + ({},),
+        ("OPTIONS", "application/json, image/*", 401, "application/json;charset=UTF-8", True, {}),
+        ("OPTIONS", _UNREAD_BESIDE_JSON, 401, "application/json;charset=UTF-8", True, {}),
+        ("OPTIONS", "text/plain", 401, "text/plain;charset=UTF-8", True, {}),
+        ("OPTIONS", "text/*", 401, "text/plain;charset=UTF-8", True, {}),
+        ("OPTIONS", "text/xml", 401, "text/xml;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/xml", 401, "application/xml;charset=UTF-8", True, {}),
+        ("OPTIONS", "application/hal+json", 401, "application/hal+json;charset=UTF-8", True, {}),
+        ("OPTIONS", "foo/bar", 401, "foo/bar;charset=UTF-8", True, {}),
+        ("OPTIONS", "image/png", 401, "image/png;charset=UTF-8", True, {}),
+        (
+            "OPTIONS",
+            "image/*",
+            500,
+            "text/html;charset=utf-8",
+            False,
+            {"allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE"},
+        ),
+        ("OPTIONS", "audio/*", 500, "text/html;charset=utf-8", False, {}),
+        (
+            "OPTIONS",
+            "foo",
+            401,
+            "text/html;charset=UTF-8",
+            False,
+            {
+                "allow": "GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH",
+                "x-frame-options": None,
+            },
+        ),
+        ("OPTIONS", "*.*", 401, "text/html;charset=UTF-8", False, {}),
+        ("OPTIONS", "*/json", 401, "text/html;charset=UTF-8", False, {}),
+        # the line in the charset named, `utf-16` as ``jira_unauthenticated`` writes it
+        ("OPTIONS", "text/plain;charset=utf-16", 401, "text/plain;charset=utf-16", "utf-16", {}),
+        # a GET whose `Accept` admits JSON passes the 406 and reaches the same choice
+        ("GET", "text/plain, application/json", 401, "text/plain;charset=UTF-8", True, {}),
+        ("GET", "application/json, */*;q=0.1", 401, "text/html;charset=UTF-8", True, {}),
+    ],
+)
+def test_jira_401_takes_its_media_type_from_accept(
+    client, method, accept, status, media_type, line, headers
+):
+    """Pins ``errors.atlassian.jira_unauthenticated``, value by value, on `OPTIONS serverInfo` and
+    `GET myself` with no credential: the `WWW-Authenticate` on every one, the line where there is
+    one, and the headers the row names."""
+    path = _INFO if method == "OPTIONS" else "/atlassian/rest/api/3/myself"
+    request = client.build_request(method, path)
+    if accept is None:
+        del request.headers["accept"]
+    else:
+        request.headers["accept"] = accept
+    r = client.send(request)
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == media_type
+    assert r.headers["www-authenticate"] == 'OAuth realm="http%3A%2F%2Ftestserver"'
+    if line == "utf-16":
+        assert r.content == b"\xfe\xff" + errors_atlassian.JIRA_UNAUTHENTICATED.encode("utf-16-be")
+        assert len(r.content) == 108
+    else:
+        assert r.content == (errors_atlassian.JIRA_UNAUTHENTICATED.encode() if line else b"")
+    for name, value in headers.items():
+        if value is None:
+            assert name not in r.headers, name
+        elif value is _PRESENT:
+            assert name in r.headers, name
+        else:
+            assert r.headers[name] == value, name
+
+
+@pytest.mark.parametrize(
+    "accept,xml",
+    [
+        (None, False),
+        ("application/xml", True),
+        ("APPLICATION/XML", True),
+        ("application/xml;q=0", True),
+        (_BROWSER, True),
+        ("text/xml", False),
+        ("application/json, application/xml", False),
+        (_HTML, False),
+        ("foo", False),
+    ],
+)
+def test_jira_connect_token_refusal_is_xml_where_accept_asks_for_it_first(client, accept, xml):
+    """Pins ``errors.atlassian.connect_token_answer`` on `serverInfo`, value by value. A table of
+    its own beside
+    :func:`test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token`, which pins the headers and
+    the route-independence on the test client's `Accept: */*`; this holds the body by `Accept`."""
+    request = client.build_request("GET", _INFO, headers={"Authorization": "Bearer nope"})
+    if accept is None:
+        del request.headers["accept"]
+    else:
+        request.headers["accept"] = accept
+    r = client.send(request)
+    assert r.status_code == 403
+    if xml:
+        assert r.headers["content-type"] == "application/xml"
+        assert r.content == b"<error>Failed to parse Connect Session Auth Token</error>"
+        assert len(r.content) == 57
+    else:
+        assert r.headers["content-type"] == "application/json"
+        assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
+
+
+#: The twelve GETs ``backlot.routers.atlassian._JIRA_NO_ACCEPT_CHECK`` names, copied here so
+#: that a member dropped from it is a failure rather than a row that disappears with it.
+_NO_406 = [
+    *(
+        f"GET /rest/api/{version}/{tail}"
+        for version in ("2", "3")
+        for tail in (
+            "license/approximateLicenseCount",
+            "license/approximateLicenseCount/product/{}",
+            "universal_avatar/view/type/{}",
+            "universal_avatar/view/type/{}/avatar/{}",
+            "universal_avatar/view/type/{}/owner/{}",
+        )
+    ),
+    "GET /rest/atlassian-connect/1/addons/{}/properties",
+    "GET /rest/atlassian-connect/1/app/module/dynamic",
+]
+
+
+def test_jira_names_the_operations_that_answer_an_accept_with_no_406():
+    """``backlot.routers.atlassian._JIRA_NO_ACCEPT_CHECK`` is the sweep's twelve, no more."""
+    assert set(_NO_406) == routers_atlassian._JIRA_NO_ACCEPT_CHECK
+    assert len(_NO_406) == 12
+
+
+@pytest.mark.parametrize("operation", _NO_406)
+def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
+    """Pins ``backlot.routers.atlassian._JIRA_NO_ACCEPT_CHECK``: each is an operation Jira's
+    baseline lists, and none answers `Accept: text/html` with the 406. The license counts and the
+    two Connect paths answer their 401 under that type; the avatar views, which real runs, get what
+    any operation real runs gets here."""
+    assert operation in routers_atlassian._JIRA_ENTRIES
+    path = operation.split(" ", 1)[1].replace("{}", "1")
+    r = client.get(f"/atlassian{path}", headers={"Accept": _HTML})
+    assert r.status_code != 406, r.text
+    if "avatar" not in path:
+        assert r.status_code == 401
+        assert r.headers["content-type"] == "text/html;charset=UTF-8"
+
+
+@pytest.mark.parametrize(
+    "status,title",
+    [
+        (403, "HTTP Status 403 – Forbidden"),
+        (405, "HTTP Status 405 – Method Not Allowed"),
+        (406, "HTTP Status 406 – Not Acceptable"),
+        (415, "HTTP Status 415 – Unsupported Media Type"),
+    ],
+)
+def test_confluence_tomcat_page_is_reals(status, title):
+    """Pins ``errors.atlassian.tomcat_page`` to the page real sent, title and heading copied from
+    it rather than from the template, and its length."""
+    page = errors_atlassian.tomcat_page(status)
+    assert page.startswith(f'<!doctype html><html lang="en"><head><title>{title}</title>')
+    assert page.endswith(f"<body><h1>{title}</h1></body></html>")
+    assert len(page.encode()) == _TOMCAT_LENGTHS[status]

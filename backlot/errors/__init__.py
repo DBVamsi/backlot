@@ -34,13 +34,14 @@ A module in ``_ENVELOPES`` provides:
   Confluence on the bare type; a vendor without it keeps the default, which is not a claim about
   what real sends.
 - ``rendered(request, status_code, body, headers)``, optional — the whole ``Response``, for a
-  vendor whose error bodies are measured to the byte or whose status the body does not decide. Only
+  vendor whose error bodies are measured to the byte or whose status the body does not decide.
   Google has one: its errors are indented, its `content-type` carries a charset, and a `callback`
-  on a GET turns one into a 200 JSONP script. The whole REQUEST, because that rendering reads the
-  method as well as the query. A vendor without it gets FastAPI's ``JSONResponse`` around the dict,
-  which is what Atlassian and GitHub keep — measured, Atlassian ignores `callback` on every route
-  asked, and GitHub's JSONP is a different envelope under a different media type, so neither wants
-  Google's renderer.
+  on a GET turns one into a 200 JSONP script. Atlassian has one for the refusals whose bytes the
+  request's `Accept` decides (:func:`backlot.errors.atlassian.rendered`), and answers ``None`` for
+  the rest. The whole REQUEST, because those renderings read the method, the query and the headers.
+  A vendor without it gets FastAPI's ``JSONResponse`` around the dict, which is what GitHub keeps —
+  its JSONP is a different envelope under a different media type, so it does not want Google's
+  renderer; Atlassian ignores `callback` on every route asked.
 
 A media type that varies by REFUSAL rather than by path and status cannot come from
 ``json_media_type``, which sees only those two. It rides on the exception instead, as a
