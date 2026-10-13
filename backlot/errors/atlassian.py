@@ -625,8 +625,8 @@ def refuse_a_media_type(
     Where the operation's entry names a ``charset``, ``detail`` adds `;charset=<it>` to a type read
     without one, as `DOCUMENTED_OTHERWISE` in ``scripts/gen_jira_unserved.py`` records.
 
-    A charset is looked up in Python's codec registry with the names Java does not hold taken out
-    (:func:`_java_charset`).
+    A charset is one Java's registry names (:func:`_java_charset`), whatever the case of the
+    parameter's name.
     """
     if body_optional and not _has_body(headers):
         return None
