@@ -759,7 +759,7 @@ def accepts(
     `text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`), where `text/html`,
     `text/plain`, `text/*`, `text/xml`, `application/xml`, `application/problem+json`,
     `application/hal+json`, `image/*` and `foo/bar` do not; a ``produces`` naming `text/plain` as
-    well is admitted the same way (`PRODUCES_TEXT` in ``scripts/gen_jira_unserved.py``).
+    well is admitted the same way (`PRODUCES` in ``scripts/gen_jira_unserved.py``).
     `application/*+json` admits JSON on Jira and the Spring services and not on the JAX-RS ones,
     and `*/json` and `*/*+json` the other way round.
 
@@ -782,7 +782,7 @@ def accepts(
     if not ranges:
         return True
     for produced in produces:
-        produced_kind, produced_subtype = produced.split("/")
+        produced_kind, produced_subtype = produced.split(";", 1)[0].split("/")
         suffixed = () if reader == "jaxrs" else (f"*+{produced_subtype}",)
         for kind, subtype, _ in ranges:
             if kind == "*" or (
@@ -829,7 +829,8 @@ def not_acceptable(
     - its JAX-RS services (``jaxrs``): no body under no `content-type`, and for a header they
       cannot parse (:func:`_jaxrs_accept`) a 400 saying so, under `text/plain`, in that place too
       (2026-10-13; a header naming `text/html` comes back with `text/html,` in front of it there,
-      which is not copied)
+      and one whose `q` beside `text/html` cannot be read is a JSON `Internal Server Error` 400,
+      neither of which is copied)
 
     An unreadable `Accept` is refused as well, its body left out (:func:`rendered`).
     """

@@ -35,7 +35,12 @@
     "DELETE /rest/api/2/issuetypescheme/{}": {},
     "DELETE /rest/api/2/issuetypescheme/{}/issuetype/{}": {},
     "DELETE /rest/api/2/issuetypescreenscheme/{}": {},
-    "DELETE /rest/api/2/mypreferences": {},
+    "DELETE /rest/api/2/mypreferences": {
+      "produces": [
+        "application/json",
+        "text/plain"
+      ]
+    },
     "DELETE /rest/api/2/notificationscheme/{}": {},
     "DELETE /rest/api/2/notificationscheme/{}/notification/{}": {},
     "DELETE /rest/api/2/permissionscheme/{}": {
@@ -113,7 +118,12 @@
     "DELETE /rest/api/3/issuetypescheme/{}": {},
     "DELETE /rest/api/3/issuetypescheme/{}/issuetype/{}": {},
     "DELETE /rest/api/3/issuetypescreenscheme/{}": {},
-    "DELETE /rest/api/3/mypreferences": {},
+    "DELETE /rest/api/3/mypreferences": {
+      "produces": [
+        "application/json",
+        "text/plain"
+      ]
+    },
     "DELETE /rest/api/3/notificationscheme/{}": {},
     "DELETE /rest/api/3/notificationscheme/{}/notification/{}": {},
     "DELETE /rest/api/3/permissionscheme/{}": {
@@ -1425,6 +1435,10 @@
       "consumes": [
         "application/json",
         "text/plain"
+      ],
+      "produces": [
+        "application/json",
+        "text/plain"
       ]
     },
     "PUT /rest/api/2/mypreferences/locale": {
@@ -1850,6 +1864,10 @@
       "consumes": [
         "application/json",
         "text/plain"
+      ],
+      "produces": [
+        "application/json",
+        "text/plain"
       ]
     },
     "PUT /rest/api/3/mypreferences/locale": {
@@ -2075,7 +2093,17 @@
     "DELETE /rest/api/2/dashboard/{}": {},
     "DELETE /rest/api/2/dashboard/{}/items/{}/properties/{}": {},
     "DELETE /rest/api/2/filter/{}": {},
-    "DELETE /rest/api/2/filter/{}/columns": {},
+    "DELETE /rest/api/2/filter/{}/columns": {
+      "produces": [
+        "application/json;charset=UTF-8",
+        "application/json",
+        "application/*+json",
+        "application/yaml",
+        "application/xml",
+        "text/xml",
+        "application/*+xml"
+      ]
+    },
     "DELETE /rest/api/2/filter/{}/favourite": {},
     "DELETE /rest/api/2/filter/{}/permission/{}": {},
     "DELETE /rest/api/2/issue/{}": {},
@@ -2117,7 +2145,17 @@
     "DELETE /rest/api/3/dashboard/{}": {},
     "DELETE /rest/api/3/dashboard/{}/items/{}/properties/{}": {},
     "DELETE /rest/api/3/filter/{}": {},
-    "DELETE /rest/api/3/filter/{}/columns": {},
+    "DELETE /rest/api/3/filter/{}/columns": {
+      "produces": [
+        "application/json;charset=UTF-8",
+        "application/json",
+        "application/*+json",
+        "application/yaml",
+        "application/xml",
+        "text/xml",
+        "application/*+xml"
+      ]
+    },
     "DELETE /rest/api/3/filter/{}/favourite": {},
     "DELETE /rest/api/3/filter/{}/permission/{}": {},
     "DELETE /rest/api/3/issue/{}": {},

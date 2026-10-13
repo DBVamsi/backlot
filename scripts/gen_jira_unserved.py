@@ -140,9 +140,27 @@ ACCEPT_UNCHECKED = _both(
     "GET /rest/atlassian-connect/1/addons/{}/properties",
     *(f"{m} /rest/atlassian-connect/1/app/module/dynamic" for m in ("GET", "POST", "DELETE")),
 }
-# Named `[application/json, text/plain]` in their 406, of the 1154, and let `text/plain`,
-# `TEXT/PLAIN` and `text/*` past it to the 401 (2026-10-13).
-PRODUCES_TEXT = _both("GET /rest/api/{v}/mypreferences")
+# What the 406 names where it is more than `[application/json]`, of the 1154: `mypreferences`
+# `text/plain` beside JSON, letting `text/plain`, `TEXT/PLAIN` and `text/*` past it to the 401, and
+# `filter/{}/columns`'s `DELETE` seven types (2026-10-13).
+PRODUCES = {
+    **{
+        op: ["application/json", "text/plain"]
+        for op in _both(*(f"{m} /rest/api/{{v}}/mypreferences" for m in ("GET", "PUT", "DELETE")))
+    },
+    **{
+        op: [
+            "application/json;charset=UTF-8",
+            "application/json",
+            "application/*+json",
+            "application/yaml",
+            "application/xml",
+            "text/xml",
+            "application/*+xml",
+        ]
+        for op in _both("DELETE /rest/api/{v}/filter/{}/columns")
+    },
+}
 
 
 def _entry(key: str, content: list[str] | None) -> dict:
@@ -156,8 +174,8 @@ def _entry(key: str, content: list[str] | None) -> dict:
             entry["charset"] = "UTF-8"
     if key in ACCEPT_UNCHECKED:
         entry["accept"] = "unchecked"
-    if key in PRODUCES_TEXT:
-        entry["produces"] = ["application/json", "text/plain"]
+    if key in PRODUCES:
+        entry["produces"] = PRODUCES[key]
     return entry
 
 
@@ -184,7 +202,7 @@ def build() -> dict:
         sort = refused if requirements is None or {} not in requirements else run
         sort[key] = _entry(key, content.get(key))
     named = UNCHECKED | BODY_OPTIONAL | set(UNDOCUMENTED) | set(DOCUMENTED_OTHERWISE)
-    named |= ACCEPT_UNCHECKED | PRODUCES_TEXT
+    named |= ACCEPT_UNCHECKED | set(PRODUCES)
     if named - set(refused) - set(run):
         stale = sorted(named - set(refused) - set(run))
         raise SystemExit(f"measured by name but no longer unserved: {stale}")

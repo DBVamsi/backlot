@@ -5166,6 +5166,10 @@ _TOMCAT_LENGTHS = {400: 435, 403: 431, 405: 449, 406: 441, 415: 457}
 _PRESENT = ...
 
 _EMPTY_HTML = errors_atlassian.HTML_MEDIA_TYPE
+_COLUMNS_PRODUCE = (
+    "application/json;charset=UTF-8, application/json, application/*+json, application/yaml, "
+    "application/xml, text/xml, application/*+xml"
+)
 
 
 def _unparsed(accept: str) -> bytes:
@@ -5484,6 +5488,11 @@ _ACCEPT_ROWS = [
         "problem",
         {},
     ),
+    # a write whose 406 names more than JSON (its entry's ``produces``)
+    ("PUT", "/atlassian/rest/api/3/mypreferences", "none", _HTML, (_JSON, b"{}"), 406, _PROBLEM)
+    + ("problem, text/plain", {"accept": "application/json, text/plain"}),
+    ("DELETE", "/atlassian/rest/api/3/filter/1/columns", "none", _HTML, None, 406, _PROBLEM, None)
+    + ({"accept": _COLUMNS_PRODUCE},),
 ]
 
 _ACCEPT_CREDENTIALS = {
