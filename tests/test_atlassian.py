@@ -378,8 +378,8 @@ def test_confluence_answers_401_to_a_basic_credential_it_cannot_parse(client, ra
     """Confluence's 403 is for a credential it read and rejected. A Basic value that is not one
     non-empty user and one non-empty password separated by a single colon is not one it can read,
     and that is a 401 carrying the site's own OAuth realm — measured on both sites for each shape
-    below, and for a value that is not base64 at all. Backlot keeps the Atlassian JSON envelope
-    that every other error here carries, where the real 401 is Tomcat's HTML page."""
+    below, and for a value that is not base64 at all. Backlot answers it in Confluence's JSON
+    envelope (`errors.atlassian.http_body`), where the real 401 is Tomcat's HTML page."""
     r = client.get("/atlassian/wiki/rest/api/space", headers=_basic(raw))
     assert r.status_code == 401
     # The literal, not the constant: comparing the body against the same constant the router
@@ -1032,9 +1032,6 @@ def test_atlassian_errors_use_atlassian_envelope(client):
         "/atlassian/wiki/rest/api/content/search"
     )  # 'search' fails int path validation -> 422
     assert r2.status_code == 422 and sorted(r2.json()) == ["message", "statusCode"]
-    # the same validation on a Jira path answers in Jira's envelope
-    r4 = client.get("/atlassian/rest/api/3/project/ENG/role/abc")
-    assert r4.status_code == 422 and sorted(r4.json()) == ["errorMessages", "errors"]
     # non-atlassian paths keep FastAPI's default {"detail"} envelope
     r3 = client.get("/no-such-route")
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
@@ -1681,9 +1678,43 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 # --- how a query parameter is READ: conversion, range, repetition -------------------------
 
 # Measured on brekkylab.atlassian.net, 2026-09-14. The two products refuse a type-conversion
-# failure in DIFFERENT envelopes, which is why these cases cannot go through the one
-# `errors.atlassian._body` serves: Jira answers RFC 7807 on `application/problem+json`, Confluence
-# its own two-key body carrying a raw Java exception string on a bare `application/json`.
+# failure in DIFFERENT envelopes, neither of them `errors.atlassian.http_body`'s: Jira answers RFC
+# 7807 on `application/problem+json`, Confluence its own two-key body carrying a raw Java
+# exception string on a bare `application/json`.
+
+
+@pytest.mark.parametrize(
+    "role_id,status",
+    [
+        # what a `long` path variable reads (``backlot.routers.atlassian._java_long``): the project
+        # lookup comes next, the 404 a caller who sees no project gets
+        ("-1", 404),
+        ("+1", 404),
+        ("%201", 404),
+        ("0x1", 404),
+        ("9223372036854775807", 404),
+        # and what it does not, the 400
+        ("abc", 400),
+        ("1.5", 400),
+        ("1e3", 400),
+        ("99999999999999999999", 400),
+    ],
+)
+def test_jira_reads_a_role_id_as_a_long_before_the_project(client, role_id, status):
+    key = synth.jira_project_key("payments")
+    r = client.get(f"/atlassian/rest/api/3/project/{key}/role/{role_id}")
+    assert r.status_code == status, r.text
+    if status == 400:
+        assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+        assert r.json() == {
+            "type": "about:blank",
+            "title": "Bad Request",
+            "status": 400,
+            "detail": f"Failed to convert 'id' with value: '{unquote(role_id)}'",
+            "instance": f"/rest/api/3/project/{key}/role/{role_id}",
+        }
+    else:
+        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
 
 # the path a refusal echoes, as `_echoed_path` gives it
@@ -4926,7 +4957,7 @@ def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
         assert r.headers["content-type"] == errors_atlassian.PROBLEM_JSON
         assert r.json()["detail"] == f"Method '{method}' is not supported."
     else:
-        assert "errors" in r.json()  # Backlot's envelope; real's two members are a separate gap
+        assert sorted(r.json()) == ["errorMessages", "errors"]  # `errors.atlassian.http_body`
 
 
 _SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "

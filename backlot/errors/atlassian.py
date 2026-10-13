@@ -57,9 +57,9 @@ CONFLUENCE_FORBIDDEN_BODY = json.dumps(
 
 # What a `<site>.atlassian.net` gateway answers a `Bearer` it cannot read as a Connect session
 # JWT, on every Jira route — `serverInfo` and `field`, which need no credential, included. One
-# `error` key and nothing else: not this module's envelope, and not Confluence's either, so it is
-# returned as its own body rather than shaped. Measured on ecosystem.atlassian.net and
-# brekkylab.atlassian.net on 2026-09-04.
+# `error` key and nothing else: neither Jira's envelope (:func:`_jira_envelope`) nor Confluence's,
+# so it is returned as its own body rather than shaped. Measured on two Jira Cloud sites,
+# 2026-09-04.
 CONNECT_TOKEN_UNREADABLE = "Failed to parse Connect Session Auth Token"
 
 
@@ -85,9 +85,9 @@ JIRA_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 # Connect module path, `cache-control: no-cache, no-store, must-revalidate` and a 1970 `expires`
 # beside it. Measured 2026-09-30; the paths are ``backlot.routers.atlassian``'s.
 CONFLUENCE_NOT_PERMITTED = "Current user not permitted to use Confluence"
-CONFLUENCE_NOT_PERMITTED_BODY = (
-    b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
-)
+CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
+    {"message": CONFLUENCE_NOT_PERMITTED, "statusCode": 403}, separators=(",", ":")
+).encode()
 
 
 def owns(path: str) -> bool:
@@ -1243,13 +1243,13 @@ def head_content_length(path: str, status_code: int) -> bool:
 def _jira_envelope(message: str) -> dict:
     """Jira's refusal body: the message in an ``errorMessages`` list beside an empty ``errors``, and
     nothing else. Real's `issue/{key}` 404, its project 404 and its `orderBy` 400 each carry these
-    two members alone, measured 2026-09-30 and 2026-10-12."""
+    two members alone, measured 2026-09-30 and 2026-10-13."""
     return {"errorMessages": [message], "errors": {}}
 
 
 def _confluence_envelope(status_code: int, message: str) -> dict:
     """Confluence's refusal body: ``statusCode`` and the scalar ``message`` its Stackless 403
-    carries, and nothing else, measured the same days."""
+    carries, and nothing else, measured 2026-09-30 and 2026-10-13."""
     return {"statusCode": status_code, "message": message}
 
 
@@ -1274,10 +1274,10 @@ def http_body(path: str, exc, query=None) -> dict:
 
 def validation_body(path: str, errors) -> tuple[int, dict]:
     """A 422 from FastAPI's own request validation, in the product's refusal envelope. The per-field
-    detail collapses to one sentence because that is the only part a client reads. Real answers an
-    unconvertible path parameter with a 400 of its own rather than a 422 — Jira's problem+json, a
-    Spring `MethodArgumentTypeMismatchException` on Confluence — which this does not reproduce; only
-    the member shape is matched here."""
+    detail collapses to one sentence because that is the only part a client reads. Jira's routes
+    read their own parameters, so what reaches this is a Confluence integer path parameter, for
+    which real answers a 400 in the same two members, a Spring
+    `MethodArgumentTypeMismatchException`, where this answers the 422."""
     message = "; ".join(e.get("msg", "invalid request") for e in errors) or "Invalid request"
     if is_confluence(path):
         return 422, _confluence_envelope(422, message)

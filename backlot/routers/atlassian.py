@@ -23,6 +23,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi import Path as PathParameter
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 from starlette.routing import Match
@@ -459,8 +460,33 @@ async def jira_project_roles(key: str, request: Request):
     return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
 
 
+def _java_long(raw: str) -> int | None:
+    """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
+    (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
+    optional `-`, otherwise decimal digits with an optional sign, within a `long`. Measured on
+    `project/{key}/role/{id}` 2026-10-13: `-1`, `+1`, `%201`, `0x1` and 9223372036854775807 read,
+    and `abc`, `1.5`, `1e3` and 99999999999999999999 not."""
+    text = errors_atlassian.strip_java_whitespace(raw)
+    hexadecimal = re.fullmatch(r"(-?)(?:0[xX]|#)([0-9a-fA-F]+)", text)
+    if hexadecimal:
+        value = int(hexadecimal.group(2), 16) * (-1 if hexadecimal.group(1) else 1)
+    elif re.fullmatch(r"[+-]?\d+", text) and max(map(ord, text)) <= 0xFFFF:
+        value = int(text)
+    else:
+        return None
+    return value if -(2**63) <= value < 2**63 else None
+
+
 @router.get("/rest/api/3/project/{key}/role/{role_id}")
-async def jira_project_role(key: str, role_id: int, request: Request):
+async def jira_project_role(
+    key: str, request: Request, role_id: str = PathParameter(json_schema_extra={"type": "integer"})
+):
+    """One project role. Its id is read the way real reads it (:func:`_java_long`), and one it
+    cannot read is the 400 naming it as `id`, ahead of the project's 404, for every caller
+    (measured 2026-10-13); the schema still declares the integer the vendor's document does."""
+    role = _java_long(role_id)
+    if role is None:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [role_id])
     conn = auth.conn(request)
     container = _require_project(request, conn, key)
     actors = []
@@ -476,7 +502,7 @@ async def jira_project_role(key: str, role_id: int, request: Request):
                         "actorUser": {"accountId": synth.atlassian_account_id(m["email"])},
                     }
                 )
-    return {"id": role_id, "name": "Users", "actors": actors}
+    return {"id": role, "name": "Users", "actors": actors}
 
 
 # The `SearchAndReconcileRequestBean` fields real's POST form accepts, measured 2026-09-18 against
