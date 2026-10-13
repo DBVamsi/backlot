@@ -494,8 +494,9 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 
     Unlike the Basic pair, which Jira serves anonymously, an unreadable bearer is refused — and
-    refused ahead of everything, so `serverInfo` and `field` answer it too even though neither
-    needs a credential. That is why this short-circuits rather than living in
+    refused ahead of every route, behind only the front door
+    (:func:`answer_at_the_atlassian_front_door`), so `serverInfo` and `field` answer it too even
+    though neither needs a credential. That is why this short-circuits rather than living in
     ``atlassian._jira_caller``. Confluence is not here: it answers its own 403 for any credential
     that fails, which ``atlassian._confluence_caller`` already gives. Measured on two Jira Cloud
     sites on 2026-09-04.
