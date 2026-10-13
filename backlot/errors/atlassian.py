@@ -3,12 +3,12 @@
 Atlassian clients (atlassian-python-api, which mcp-atlassian uses) parse an error body as Atlassian
 Cloud's shape — Confluence's ``raise_for_status`` does ``response.json()["message"]`` — so FastAPI's
 default ``{"detail": …}`` turns every error into a cryptic ``KeyError: 'message'`` inside the client
-rather than the error Backlot meant to report. Both Jira's ``errorMessages`` list and Confluence's
-scalar ``message`` are emitted, since one envelope serves both APIs here.
+rather than the error Backlot meant to report. The two products do not share an envelope, and
+:func:`http_body` answers each in the one it measures.
 
-One envelope, but not the ONLY one: a refusal real answers in a shape measured to differ carries
-its own body on an :class:`AtlassianError` and is served verbatim. Reading a query parameter is
-where the two products visibly part — see :func:`integer_conversion_failure`.
+That envelope is not the only shape either product answers in: a refusal real gives in a shape
+measured to differ carries its own body on an :class:`AtlassianError` and is served verbatim.
+Reading a query parameter is where the two visibly part — see :func:`integer_conversion_failure`.
 
 Nor is the body always JSON. A path neither product serves is Jira's RFC 7807 :func:`no_endpoint`,
 Confluence's JAX-RS 404 in whichever of two shapes `Accept` asks for (:func:`jaxrs_not_found`), or
@@ -22,7 +22,6 @@ import base64
 import codecs
 import hashlib
 import html
-import http
 import json
 import re
 from typing import NamedTuple
@@ -50,8 +49,8 @@ CONFLUENCE_FORBIDDEN = (
     '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
 )
 CONFLUENCE_UNAUTHORIZED = "Unauthorized"
-#: That 403 as real sends it, byte for byte: two members, 190 bytes on 2026-09-30, where the shared
-#: envelope a served route renders it in (:func:`http_body`) adds three more.
+#: That 403 as real sends it, byte for byte: two members, 190 bytes on 2026-09-30, the same two a
+#: served route's refusal carries (:func:`http_body`).
 CONFLUENCE_FORBIDDEN_BODY = json.dumps(
     {"statusCode": 403, "message": CONFLUENCE_FORBIDDEN}, separators=(",", ":")
 ).encode()
@@ -85,6 +84,7 @@ JIRA_UNAUTHENTICATED = "Client must be authenticated to access this resource."
 # :data:`CONFLUENCE_FORBIDDEN`: the members in the other order, and on every one measured but the
 # Connect module path, `cache-control: no-cache, no-store, must-revalidate` and a 1970 `expires`
 # beside it. Measured 2026-09-30; the paths are ``backlot.routers.atlassian``'s.
+CONFLUENCE_NOT_PERMITTED = "Current user not permitted to use Confluence"
 CONFLUENCE_NOT_PERMITTED_BODY = (
     b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
 )
@@ -160,7 +160,7 @@ def strip_java_whitespace(raw: str) -> str:
 
 
 class AtlassianError(HTTPException):
-    """A refusal whose body real sends verbatim, rather than through :func:`_body`.
+    """A refusal whose body real sends verbatim, rather than through :func:`http_body`.
 
     Carried on the exception the way Google's errors carry their own fields, so the router raises
     one expression and ``backlot.main``'s handler stays a dispatch. ``media_type`` rides along
@@ -632,7 +632,7 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
 
 # The three sentences Jira answers a POST body it cannot turn into an object, measured 2026-09-15.
 # Each arrives as `errorMessages` ALONE — no `errors`, where the refusals below it carry one — so
-# they go through :class:`AtlassianError` rather than :func:`_body`.
+# they go through :class:`AtlassianError` rather than :func:`http_body`.
 BODY_EMPTY = "No content to map to Object due to end of input"
 BODY_UNPARSEABLE = "There was an error parsing JSON. Check that your request body is valid."
 BODY_NOT_AN_OBJECT = "Invalid request payload. Refer to the REST API documentation and try again."
@@ -805,11 +805,11 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     (``backlot.main.answer_head_as_the_get_without_its_body``) and an `OPTIONS` is answered by
     ``backlot.routers.atlassian._options_answer``, so neither arrives here.
 
-    The one refusal the shared envelope :func:`http_body` gets wrong for both products, in two
-    different directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807
-    on `application/problem+json` naming the methods that path takes (the table above). A client
-    reading `errors[0]["code"]` is the one this costs: the shared envelope has an `errors` OBJECT,
-    so that read raises against Backlot and works against real Confluence.
+    Neither product answers this refusal in its :func:`http_body` envelope, and they part in two
+    directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807 on
+    `application/problem+json` naming the methods that path takes (the table above). A client
+    reading `errors[0]["code"]` is the one Confluence's shape serves: its envelope has no `errors`
+    at all.
 
     ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
     Confluence side. Starlette would compute one there from the catch-all
@@ -1208,38 +1208,45 @@ def head_content_length(path: str, status_code: int) -> bool:
     return 200 <= status_code < 300
 
 
-def _body(status_code: int, detail) -> dict:
-    try:
-        reason = http.HTTPStatus(status_code).phrase
-    except ValueError:
-        reason = "Error"
-    message = detail if isinstance(detail, str) else str(detail)
-    return {
-        "statusCode": status_code,
-        "message": message,
-        "reason": reason,
-        "errorMessages": [message],
-        "errors": {},
-    }
+def _jira_envelope(message: str) -> dict:
+    """Jira's refusal body: the message in an ``errorMessages`` list beside an empty ``errors``, and
+    nothing else. Real's `issue/{key}` 404, its project 404 and its `orderBy` 400 each carry these
+    two members alone, measured 2026-09-30 and 2026-10-12."""
+    return {"errorMessages": [message], "errors": {}}
+
+
+def _confluence_envelope(status_code: int, message: str) -> dict:
+    """Confluence's refusal body: ``statusCode`` and the scalar ``message`` its Stackless 403
+    carries, and nothing else, measured the same days."""
+    return {"statusCode": status_code, "message": message}
 
 
 def http_body(path: str, exc, query=None) -> dict:
-    """``path`` and ``query`` are both unused: one envelope covers every Atlassian ROUTE, unlike
-    Google's per-family split, and no Atlassian refusal is selected by a query parameter the way
-    Google's is by `$.xgafv`. They are in the signature so the dispatch in ``__init__`` can treat
-    every module alike. A path that is not a route is answered elsewhere and in a shape of its own
-    — see :func:`no_endpoint`, :func:`jaxrs_not_found` and :data:`HTML_NOT_FOUND`.
+    """The refusal body for a served route, in the product's own envelope — Confluence's two members
+    (:func:`_confluence_envelope`) under `/wiki`, Jira's two (:func:`_jira_envelope`) elsewhere.
+    ``query`` is unused: no Atlassian refusal is selected by a query parameter the way Google's is
+    by `$.xgafv`, and it is in the signature so the dispatch in ``__init__`` can treat every module
+    alike. A path that is not a route is answered elsewhere and in a shape of its own — see
+    :func:`no_endpoint`, :func:`jaxrs_not_found` and :data:`HTML_NOT_FOUND`.
 
-    An :class:`AtlassianError` is the exception to the one envelope and says so by carrying its
-    own body, which is served as it stands."""
+    An :class:`AtlassianError` is the exception and says so by carrying its own body, served as it
+    stands."""
     body = getattr(exc, "body", None)
-    return body if body is not None else _body(exc.status_code, exc.detail)
+    if body is not None:
+        return body
+    message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    if is_confluence(path):
+        return _confluence_envelope(exc.status_code, message)
+    return _jira_envelope(message)
 
 
 def validation_body(path: str, errors) -> tuple[int, dict]:
-    """A 422 from FastAPI's own request validation, in the same envelope. The per-field detail
-    collapses to one sentence because that is the only part a client reads.
-
-    ``path`` is unused, as in :func:`http_body`: one envelope covers every Atlassian route."""
+    """A 422 from FastAPI's own request validation, in the product's refusal envelope. The per-field
+    detail collapses to one sentence because that is the only part a client reads. Real answers an
+    unconvertible path parameter with a 400 of its own rather than a 422 — Jira's problem+json, a
+    Spring `MethodArgumentTypeMismatchException` on Confluence — which this does not reproduce; only
+    the member shape is matched here."""
     message = "; ".join(e.get("msg", "invalid request") for e in errors) or "Invalid request"
-    return 422, _body(422, message)
+    if is_confluence(path):
+        return 422, _confluence_envelope(422, message)
+    return 422, _jira_envelope(message)

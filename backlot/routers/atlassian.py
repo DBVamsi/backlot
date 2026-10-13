@@ -215,13 +215,18 @@ def _jira_caller(request: Request) -> Caller:
     return auth.atlassian_caller(request)
 
 
-def _confluence_caller(request: Request) -> Caller:
+def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Caller:
     """The caller for a Confluence read, refusing where Jira would go anonymous.
 
     Confluence rejects the request outright, and which refusal depends on the credential rather
     than on the route: a pair it read and rejected, and a request carrying none, are its 403; a
     Basic value it could not read is a 401 naming the site's OAuth realm. Measured on both sites
     on 2026-09-04, every route and every credential shape (see ``auth.basic_credential_kind``).
+
+    ``not_permitted`` picks the other anonymous 403, the one `search` gives
+    (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
+    Stackless 403; measured on Confluence Cloud 2026-09-30 and 2026-10-12. The 401 for a Basic value
+    it cannot read is the same on `search` as elsewhere.
     """
     caller = auth.atlassian_caller(request)
     if not caller.is_anonymous:
@@ -232,6 +237,13 @@ def _confluence_caller(request: Request) -> Caller:
             status_code=401,
             detail=errors_atlassian.CONFLUENCE_UNAUTHORIZED,
             headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+        )
+    if not_permitted:
+        # message first, as real orders it; `vendor_headers` adds search's cache-control and expires
+        raise errors_atlassian.AtlassianError(
+            403,
+            {"message": errors_atlassian.CONFLUENCE_NOT_PERMITTED, "statusCode": 403},
+            media_type="application/json",
         )
     raise HTTPException(status_code=403, detail=errors_atlassian.CONFLUENCE_FORBIDDEN)
 
@@ -1550,7 +1562,7 @@ async def confluence_cql_search(request: Request):
     where this server answers the space's pages and blogposts. A CQL holding none of the four names
     only fields this route does not read, and answers no row."""
     conn = auth.conn(request)
-    caller = _confluence_caller(request)
+    caller = _confluence_caller(request, not_permitted=True)
     ids = auth.visible_ids(request, caller)
     # Not `_confluence_page_params`: see `_cql_page_param`.
     limit = _cql_page_param(request, "limit", 25)

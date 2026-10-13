@@ -71,9 +71,11 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
     assert found.status_code == 200 and found.json()["issues"] == []
     issue = client.get("/atlassian/rest/api/3/issue/ABC-1", headers=headers)
     assert issue.status_code == 404
-    assert issue.json()["errorMessages"] == [
-        "Issue does not exist or you do not have permission to see it."
-    ]
+    # Jira's own envelope, two members and no more (`errors.atlassian.http_body`)
+    assert issue.json() == {
+        "errorMessages": ["Issue does not exist or you do not have permission to see it."],
+        "errors": {},
+    }
     for ver in ("2", "3"):
         info = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=headers)
         signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
@@ -217,7 +219,10 @@ def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers
     for path in (f"/rest/api/3/project/{key}/role", f"/rest/api/3/project/{key}/role/10002"):
         r = client.get(f"/atlassian{path}", headers=headers)
         assert r.status_code == 404, path
-        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
+        assert r.json() == {
+            "errorMessages": [f"No project could be found with key '{key}'."],
+            "errors": {},
+        }, path
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
@@ -317,16 +322,25 @@ def test_confluence_refuses_an_unreadable_bearer_with_its_own_403_not_jiras(clie
 @pytest.mark.parametrize("headers", UNRESOLVABLE)
 def test_confluence_refuses_an_unresolvable_credential_with_its_own_403(client, headers):
     """Confluence does not process an anonymous caller the way Jira does: it rejects the request
-    outright, with a 403 in its own envelope, whether the credential failed or was never sent."""
-    for path in (
-        "/wiki/rest/api/space",
-        "/wiki/rest/api/content/1",
-        "/wiki/rest/api/content/1/child/attachment?limit=abc",
+    outright, with a 403 in its own envelope, whether the credential failed or was never sent. The
+    body is real's to the byte, two members; `search` gives the other anonymous 403, in its own
+    words (``backlot.routers.atlassian._confluence_caller``)."""
+    forbidden, not_permitted = (
+        errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+        errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,
+    )
+    for path, body in (
+        ("/wiki/rest/api/space", forbidden),
+        ("/wiki/rest/api/space/ENG", forbidden),
+        ("/wiki/rest/api/content/1", forbidden),
+        ("/wiki/rest/api/content/1/label", forbidden),
+        ("/wiki/rest/api/content/1/child/attachment?limit=abc", forbidden),
+        ("/wiki/rest/api/search?cql=type%3Dpage", not_permitted),
     ):
         r = client.get(f"/atlassian{path}", headers=headers)
         assert r.status_code == 403, path
-        assert r.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
-        assert r.json()["statusCode"] == 403
+        assert r.headers["content-type"] == "application/json", path
+        assert r.content == body, path
 
 
 @pytest.mark.parametrize(
@@ -366,7 +380,8 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
 def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
     """Atlassian clients parse the error body as Atlassian Cloud's envelope (Confluence's
     raise_for_status reads ``response.json()["message"]``), so an error there is not FastAPI's
-    ``{"detail": ...}`` — see backlot.errors.atlassian."""
+    ``{"detail": ...}`` — see backlot.errors.atlassian. Confluence's 403 carries the two members
+    ``errors.atlassian.CONFLUENCE_FORBIDDEN_BODY`` records and no more."""
     r = client.get("/atlassian/wiki/rest/api/space")
     assert r.status_code == 403
     body = r.json()
@@ -377,7 +392,7 @@ def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
         "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
         '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
     )
-    assert body["errorMessages"] == [errors_atlassian.CONFLUENCE_FORBIDDEN]
+    assert sorted(body) == ["message", "statusCode"]
     assert body["statusCode"] == 403
 
 
@@ -981,14 +996,18 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
 
 def test_atlassian_errors_use_atlassian_envelope(client):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so
-    # Backlot must shape /atlassian errors like Cloud does (message + statusCode), not {"detail"}.
+    # Backlot must shape /atlassian errors like Cloud does, not {"detail"}: each product's own two
+    # members (`errors.atlassian.http_body`).
     r = client.get("/atlassian/wiki/rest/api/content/999999")  # unauthenticated -> 403
     assert r.status_code == 403
-    assert r.json().get("message") and r.json().get("statusCode") == 403
+    assert sorted(r.json()) == ["message", "statusCode"] and r.json()["statusCode"] == 403
     r2 = client.get(
         "/atlassian/wiki/rest/api/content/search"
     )  # 'search' fails int path validation -> 422
-    assert r2.status_code == 422 and "message" in r2.json()
+    assert r2.status_code == 422 and sorted(r2.json()) == ["message", "statusCode"]
+    # the same validation on a Jira path answers in Jira's envelope
+    r4 = client.get("/atlassian/rest/api/3/project/ENG/role/abc")
+    assert r4.status_code == 422 and sorted(r4.json()) == ["errorMessages", "errors"]
     # non-atlassian paths keep FastAPI's default {"detail"} envelope
     r3 = client.get("/no-such-route")
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
@@ -1615,7 +1634,7 @@ def test_jira_refuses_an_order_by_field_that_is_not_created(paged, order):
     account's language, so its wording is not portable."""
     r, d = _page(paged, orderBy=order)
     assert r.status_code == 400
-    assert d["errors"] == {}
+    assert sorted(d) == ["errorMessages", "errors"] and d["errors"] == {}
     # The message names the field AFTER the direction sigil is stripped, which is what real Jira
     # echoes: `--created` there reports `-created`, not what was sent.
     assert d["errorMessages"][0].endswith(f"Instead: {order.lstrip('-+')}")
