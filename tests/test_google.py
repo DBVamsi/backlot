@@ -2469,8 +2469,8 @@ _REFUSED = "refused"  # the editor hosts' empty 400 (`errors.google.head_refusal
 # A `HEAD` per row, answered as the `GET` of the same URL (or of the URL in the third column) with
 # the body left off, or refused. The credential is `admin`, `mia` (the scoped token, which can see
 # neither the spreadsheet nor the CFO's message), `bad` or None for no header; the status is the
-# GET's and the `HEAD`'s; the last column is whether the `HEAD` declares a length
-# (`errors.google.head_content_length`).
+# `HEAD`'s, and the GET's too where the row is not refused; the last column is whether the `HEAD`
+# declares a length (`errors.google.head_content_length`).
 # fmt: off
 _HEAD_ROWS = [
     ("/drive/v3/files", "admin", None, 200, False),
@@ -2577,9 +2577,10 @@ def test_google_a_head_is_the_get_without_its_body_or_the_editor_hosts_400(
     assert b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body") == b""
 
 
-# A trailing slash per row, as ``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``
-# records real's answer: the slashed request, the slash-free one it answers as (None where it is the
-# unrouted 404), the credential as in `_HEAD_ROWS`, and the status.
+# A slashed request per row, the spellings measured for
+# ``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``: the slashed request, the
+# request it answers as (None where that is the unrouted 404), the credential as in `_HEAD_ROWS`,
+# and the status.
 # fmt: off
 _SLASHED_ROWS = [
     ("GET /drive/v3/files/", "GET /drive/v3/files", "admin", 200),
@@ -2594,12 +2595,15 @@ _SLASHED_ROWS = [
     ("GET /drive/v3/drives/", "GET /drive/v3/drives", "admin", 200),
     ("GET /gmail/v1/users/me/profile/", "GET /gmail/v1/users/me/profile", None, 401),
     ("GET /gmail/v1/users/me/profile//", "GET /gmail/v1/users/me/profile", "admin", 200),
+    ("GET /gmail/v1/users/me/labels//", "GET /gmail/v1/users/me/labels", "admin", 200),
     ("GET /gmail/v1/users/me/labels///", "GET /gmail/v1/users/me/labels", "admin", 200),
     ("GET /gmail/v1/users/me/labels/", "GET /gmail/v1/users/me/labels", "bad", 401),
     ("GET /gmail/v1/users/me/labels/INBOX/", "GET /gmail/v1/users/me/labels/INBOX", "admin", 200),
     ("GET /gmail/v1/users/me/messages/?maxResults=1", "GET /gmail/v1/users/me/messages?maxResults=1", "admin", 200),
     ("GET /gmail/v1/users/me/messages/{comp}/", "GET /gmail/v1/users/me/messages/{comp}", "mia", 404),
+    ("GET /gmail/v1/users/me/messages/{held}/attachments/{att}/", "GET /gmail/v1/users/me/messages/{held}/attachments/{att}", "admin", 200),
     ("GET /gmail/v1/users/me/threads/", "GET /gmail/v1/users/me/threads", "admin", 200),
+    ("GET /gmail/v1/users/me/threads/{comp}/", "GET /gmail/v1/users/me/threads/{comp}", "admin", 200),
     ("GET /sheets/v4/spreadsheets/{sheet}/", "GET /sheets/v4/spreadsheets/{sheet}", "admin", 200),
     ("GET /sheets/v4/spreadsheets/{sheet}//", "GET /sheets/v4/spreadsheets/{sheet}", None, 403),
     ("GET /sheets/v4/spreadsheets/{sheet}/values/A1/", "GET /sheets/v4/spreadsheets/{sheet}/values/A1", "admin", 200),
@@ -2622,14 +2626,20 @@ _SLASHED_ROWS = [
 def test_google_a_trailing_slash_is_not_part_of_the_path(
     client, admin_h, tokens, ro_conn, slashed, slash_free, caller, status
 ):
-    """The rows `_SLASHED_ROWS` records, each answered byte for byte as its slash-free spelling
-    (``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``)."""
+    """The rows `_SLASHED_ROWS` records, each answered byte for byte as the request beside it where
+    it has one (``backlot.main.serve_a_slashed_google_path_as_the_path_without_it``)."""
+    held = ro_conn.execute(
+        "SELECT id FROM gmail_messages WHERE COALESCE(attachments,'') NOT IN ('', '[]') LIMIT 1"
+    ).fetchone()["id"]
+    parts = client.get(f"/gmail/v1/users/me/messages/{held}", headers=admin_h).json()["payload"]
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],
         "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
         "comp": ro_conn.execute(
             "SELECT id FROM gmail_messages WHERE title LIKE 'Confidential comp%'"
         ).fetchone()["id"],
+        "held": held,
+        "att": next(p for p in parts["parts"] if p.get("filename"))["body"]["attachmentId"],
     }
     headers = {
         "admin": admin_h,

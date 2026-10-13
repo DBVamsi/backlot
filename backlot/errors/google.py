@@ -765,13 +765,11 @@ def jsonp_callback(request: Request) -> str | None:
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
     looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
-    method this parameter applies to. ``backlot.main.answer_head_as_the_get_without_its_body`` runs
-    a `HEAD` as its GET and marks it ``answering_head`` on ``request.state`` for this check, since
-    real ignores the parameter there: measured 2026-10-11 on Drive's `files.list` and Gmail's
-    `profile`, a callable name and an uncallable one each answered a `HEAD` with 200
-    `application/json; charset=UTF-8`, where the GET beside it was the script, and a `HEAD` that
-    failed beside one kept its own status — no credential's and a bad one's, and a missing file's
-    404 — where its GET was the script at 200.
+    method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not GET here
+    either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable name and
+    an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the
+    GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
+    credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -1087,18 +1085,17 @@ def refuses_head(path: str) -> bool:
 
 def head_refusal() -> Response:
     """What the Docs, Sheets and Slides hosts answer a `HEAD` with: 400, `text/html; charset=utf-8`,
-    `content-length: 0` and no body.
+    `content-length: 0` and no body, ahead of the credential and of the system parameter alike.
+    Measured 2026-10-11 on routed paths, an unrouted one and the root, beside an unknown `$.xgafv`
+    and with a trailing slash, with a Workspace member's token, a bad one and none.
 
-    Measured 2026-10-11 on `documents/{id}`, `spreadsheets/{id}`, `spreadsheets/{id}/values/A1`,
-    `presentations/{id}`, an unrouted path and the host's root, with a Workspace member's token,
-    with a bad one and with none, beside an unknown `$.xgafv` and with a trailing slash: each
-    answered this, ahead of the credential and of the system parameter alike. One spreadsheet was
-    the exception, the Workspace one the GETs were measured on, whose `HEAD` answered the host's 404
-    HTML page three times running, anonymous or not, where five other ids — another account's
-    spreadsheet, a document's id, a made-up one of the same length, a shorter one and `abc` —
-    answered the 400. What sets that one apart was not found, so the 400 is what every id gets
-    here. The bare `/v4` is a second exception on Sheets, the same 404 page, where Docs' bare `/v1`
-    is the 400."""
+    Sheets answers some with its host's HTML 404 page instead, and not by class of credential. On
+    2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
+    other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
+    on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; and another
+    Workspace member's token, with the `drive` and `gmail.readonly` scopes, got the 404 on each
+    Sheets path it was sent to. What picks the page was not found, so every caller gets the 400
+    here."""
     return Response(status_code=400, media_type="text/html")
 
 
@@ -1116,6 +1113,5 @@ def head_content_length(request: Request, status_code: int) -> bool:
     length on its GET (`File not found`, an unsupported `mimeType`, an absent one, a Docs file read
     with `alt=media`, no credential, the 503) and none on its `HEAD`.
 
-    Which request is a download is ``routers.google._drive_download``'s question, which the router's
-    dependency answers onto ``request.state`` while the `HEAD` runs as its GET."""
+    ``request.state.google_download`` is set by ``routers.google._system_parameters``."""
     return status_code == 200 and getattr(request.state, "google_download", False)
