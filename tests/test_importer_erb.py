@@ -3550,6 +3550,37 @@ def test_a_declared_exclusion_is_recorded_by_identity_and_the_layer_adds_up(tmp_
     )
 
 
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param(b"{not json", id="not JSON"),
+        pytest.param(b'{"a": "\xff"}', id="not UTF-8"),
+        pytest.param(b'{"n": ' + b"1" * 4301 + b"}", id="an integer past 4300 digits"),
+        pytest.param(b"[" * 1_000_000, id="nested too deep"),
+        pytest.param(None, id="a directory"),
+    ],
+)
+def test_a_json_file_that_cannot_be_read_is_passed_over(tmp_path, written):
+    """A generated-data file that cannot be read as JSON is read as nothing, whatever the reason:
+    `read_snapshot` answers None for it, and `iter_records` walks on to the next record. ``None``
+    puts a directory where the file goes."""
+
+    def put(path):
+        if written is None:
+            path.mkdir()
+        else:
+            path.write_bytes(written)
+
+    put(tmp_path / erb.SNAPSHOT_FILE)
+    assert erb.read_snapshot(tmp_path) is None
+    source = tmp_path / "sources" / "slack"
+    source.mkdir(parents=True)
+    put(source / "a.json")
+    (source / "b.json").write_text(json.dumps({"dataset_doc_uuid": "dsid_b"}), encoding="utf-8")
+    read = [dsid for _, dsid, _ in erb.iter_records(tmp_path / "sources", ("slack",))]
+    assert read == ["dsid_b"]
+
+
 def test_the_snapshot_the_data_came_from_reaches_the_manifest(tmp_path, monkeypatch):
     """Neither ref nor tag pins this data — `main` moved past the commit that added generated_data
     and the one tag predates it — so the artifact carries the tarball digest instead."""

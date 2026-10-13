@@ -5,15 +5,16 @@
 # runs. The Linux suite under PYTHONWARNDEFAULTENCODING=1 (ci.yml) refuses such an open on every
 # pull request wherever a test reaches it; this job is the proof on the platform itself, with
 # PYTHONUTF8 unset, and it is too slow to run on every commit (on 2026-10-13 its pull-request run
-# took 5 minutes 15 seconds on windows-latest, where the Linux test jobs took 3 to 4). So it runs
-# on a pull request only once a maintainer adds the `windows` label, for a change to how Backlot
-# opens files, spawns processes or reads paths, and then on each push to it; and on `main` once a
-# day, as the whole suite, rather than after every merge. A pull request runs the README's first
-# command, the test files that read and write Backlot's own files, and the tests marked `windows`
-# or xfail: a strict xfail that starts to pass fails until its mark is removed, and the `windows`
-# mark keeps the test in this run after that. The first step refuses a runner whose locale, or
-# Python's UTF-8 mode, is UTF-8, where every step after it would pass without proving anything;
-# for the same reason Python is pinned below 3.15, where UTF-8 mode becomes the default (PEP 686).
+# took 5 minutes 25 seconds on windows-latest, and each Linux test job under 4). So it runs on a
+# pull request only once a maintainer adds the `windows` label, for a change to how Backlot opens
+# files, spawns processes or reads paths, and then on each push to it; and on `main` once a day, as
+# the whole suite of a `dev` install, rather than after every merge. A pull request runs the
+# README's first command, the test files that read and write Backlot's own files, and the tests
+# marked `windows` or xfail: a strict xfail that starts to pass fails until its mark is removed, and
+# the `windows` mark keeps the test in this run after that. A step before the tests refuses a runner
+# whose locale, or Python's UTF-8 mode, is UTF-8, where every step after it would pass without
+# proving anything; for the same reason Python is pinned below 3.15, where UTF-8 mode becomes the
+# default (PEP 686).
 name: Windows
 
 on:
@@ -28,15 +29,21 @@ permissions:
   contents: read
 
 concurrency:
-  # A newer push to the same pull request, or a label added to it, replaces a run still going.
-  group: windows-${{ github.event.pull_request.number || github.ref }}
+  # A newer push to the same pull request, or the `windows` label added to it, replaces a run still
+  # going. Any other label added gets a group of its own: its run starts no job, and must not cancel
+  # one that is testing.
+  group: >-
+    windows-${{ github.event.pull_request.number || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'windows'
+    && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
   test:
     if: >-
       github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'windows')
+      || (contains(github.event.pull_request.labels.*.name, 'windows')
+      && (github.event.action != 'labeled' || github.event.label.name == 'windows'))
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
