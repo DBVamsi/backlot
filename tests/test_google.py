@@ -1006,15 +1006,17 @@ _ANON = "anonymous"  # no credential on the part or on the batch
 _NORMALISED = "/batch/drive/v3?quotaUser=7&foo=%41&b%61r=1&~t=%7e&&"
 _A1_FILTER = '{"dataFilters": [{"a1Range": "A1"}]}'
 _BAD_FILTER = '{"dataFilters": "abc"}'
+_CHALLENGE = 'Bearer realm="https://accounts.google.com/"'  # a credential that names no token
+_CHALLENGED = f'{_CHALLENGE}, error="invalid_token"'  # one that names a token that does not resolve
 
 # One part per batch, as real's Drive batch and Sheets batch answered it. A row is the batch URI
 # with its query, the part as (method, target, body, its own Authorization), the status in the batch
 # and the status of the same request sent on its own, then a 302's `Location` below the server's
-# base URL or a 501's body. The status on its own is ``None`` where real's is one Backlot does not
-# give: the export with an empty `alt=` (400), the id holding a `%` no two hex digits follow (503),
-# the two downloads with `callback=a%20b` (503) and the export with that `callback` beside
-# `$.xgafv=9` (400). `_drive_batch_download`, `_drive_batch_redirect` and `_workbook` record the
-# rules.
+# base URL, a 401's `WWW-Authenticate` or a 501's body. The status on its own is ``None`` where
+# real's is one Backlot does not give: the export with an empty `alt=` (400), the id holding a `%`
+# no two hex digits follow (503), the two downloads with `callback=a%20b` (503) and the export with
+# that `callback` beside `$.xgafv=9` (400). `_drive_batch_download`, `_drive_batch_redirect` and
+# `_workbook` record the rules.
 # fmt: off
 _BATCH_ROWS = [
     # a Drive download is redirected ahead of the lookup and the typed, `fields` and `mimeType`
@@ -1061,10 +1063,10 @@ _BATCH_ROWS = [
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%23b/export?mimeType=text/plain", None, None), 302, 404, "download/drive/v3/files/a%23b/export?mimeType=text/plain&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/a%b%4?alt=media", None, None), 302, None, "download/drive/v3/files/a%b%4?alt=media&quotaUser=7"),
     # its place among `$.xgafv`, the credential and `callback`, as `_drive_batch_redirect` records
-    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _BAD), 401, 401, None),
-    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "OAuth nope"), 401, 401, None),
-    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer nope x"), 401, 401, None),
-    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearernope"), 401, 401, None),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{doc}/export?mimeType=text/plain", None, _BAD), 401, 401, _CHALLENGED),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "OAuth nope"), 401, 401, _CHALLENGED),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer nope x"), 401, 401, _CHALLENGED),
+    (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearernope"), 401, 401, _CHALLENGE),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Basic YWJjOmRlZg=="), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "bearer nope"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
     (_DRIVE_BATCH, ("GET", "/drive/v3/files/{pdf}?alt=media", None, "Bearer"), 302, 401, "download/drive/v3/files/{pdf}?alt=media&quotaUser=7"),
@@ -1098,9 +1100,9 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
-    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, None),
-    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", _BAD), 401, 401, None),
-    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, _BAD), 401, 401, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, _CHALLENGED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", _BAD), 401, 401, _CHALLENGED),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, _BAD), 401, 401, _CHALLENGED),
 ]
 # fmt: on
 
@@ -1131,8 +1133,9 @@ def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
 ):
     """The rows `_BATCH_ROWS` records, each beside the same request sent on its own where the row
     gives that request's status. A part the redirect answers carries real's three headers in real's
-    order. Neither answer looks the file up, so a spreadsheet the scoped token cannot see is
-    answered as one that does not exist is."""
+    order, and a 401 its challenge ahead of its `Content-Type`. Neither the redirect nor the 501
+    looks the file up, so a spreadsheet the scoped token cannot see is answered as one that does not
+    exist is."""
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
@@ -1153,6 +1156,11 @@ def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
             location,
         ]
         assert json.loads(sub_body) == _REDIRECTED
+    elif status == 401:
+        assert lines == [
+            f"WWW-Authenticate: {detail}",
+            "Content-Type: application/json; charset=UTF-8",
+        ]
     elif status == 501:
         assert json.loads(sub_body) == detail
     if alone is not None:
@@ -2506,32 +2514,30 @@ def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, 
         assert "www-authenticate" not in r.headers
     else:
         assert e["message"] == gerr.MISSING_CREDENTIALS_MESSAGE and e["status"] == "UNAUTHENTICATED"
-        assert r.headers["www-authenticate"] == 'Bearer realm="https://accounts.google.com/"'
+        assert r.headers["www-authenticate"] == _CHALLENGE
     bad = client.request(method, url, json=body, headers=BAD_TOKEN)
     assert bad.status_code == 401, bad.text
-    assert bad.headers["www-authenticate"] == (
-        'Bearer realm="https://accounts.google.com/", error="invalid_token"'
-    )
+    assert bad.headers["www-authenticate"] == _CHALLENGED
     if admin is not None:
         assert client.request(method, url, json=body, headers=admin_h).status_code == admin
 
 
 _SERVED = "served"  # the read's own 200
-_BAD = "bad"  # bad_token(), its challenge naming `invalid_token`
-_UNNAMED = "unnamed"  # bad_token(named=False), the bare challenge
 _NONE = "none"  # the operation's answer to no credential at all
 
 # An `Authorization` value per row, `{t}` the admin token, and which of four answers real gave it on
-# Gmail's `labels.get` and Drive's `files.list`, as ``routers.google._credential`` records.
+# Gmail's `labels.get` and Drive's `files.list`, as ``routers.google._credential`` records: the
+# read's 200, the bad token's 401 under either challenge (`_CHALLENGED`, `_CHALLENGE`), or what no
+# credential gets.
 # fmt: off
 _CREDENTIAL_ROWS = [
     ("Bearer {t}", _SERVED), ("OAuth {t}", _SERVED), ("Bearer  {t}", _SERVED),
     ("Bearer \t{t}", _SERVED), ("Bearer {t} x", _SERVED), ("Bearer {t}\tx", _SERVED),
     ("Bearer {t},x", _SERVED), ("Bearer ,{t}", _SERVED),
-    ("Bearer nope", _BAD), ("OAuth nope", _BAD), ("Bearer x {t}", _BAD), ("Bearer {t};x", _BAD),
-    ('Bearer {t}"', _BAD), ("Bearer nope x", _BAD),
-    ("Bearer{t}", _UNNAMED), ("Bearer\t{t}", _UNNAMED), ("Bearers {t}", _UNNAMED),
-    ("Bearer ,", _UNNAMED), ("OAuth ,", _UNNAMED),
+    ("Bearer nope", _CHALLENGED), ("OAuth nope", _CHALLENGED), ("Bearer x {t}", _CHALLENGED), ("Bearer {t};x", _CHALLENGED),
+    ('Bearer {t}"', _CHALLENGED), ("Bearer nope x", _CHALLENGED),
+    ("Bearer{t}", _CHALLENGE), ("Bearer\t{t}", _CHALLENGE), ("Bearers {t}", _CHALLENGE),
+    ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE),
     ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
     ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
     ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
@@ -2558,8 +2564,7 @@ def test_a_credential_is_read_as_google_reads_it(
         return
     assert r.status_code == 401, r.text
     assert _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE
-    named = ', error="invalid_token"' if answer == _BAD else ""
-    assert r.headers["www-authenticate"] == f'Bearer realm="https://accounts.google.com/"{named}'
+    assert r.headers["www-authenticate"] == answer
 
 
 _DENIED = "Delegation denied for mia@acme.com"
@@ -2638,15 +2643,12 @@ def test_gmail_a_users_token_reads_its_own_mailbox_only(
 # the method, the path, the query, the credential, and what real answered, as
 # ``refuse_an_unserved_operation`` records — the status and the error code inside it, which a
 # `callback` on a GET wraps at 200. A POST and a PATCH leave `callback` alone, as a served POST
-# does.
+# does. An anonymous GET's `callback=cb` is a row of `JSONP_FAMILY_ERRORS` instead.
 # fmt: off
 _UNSERVED_PARAMETER_ROWS = [
     ("GET", "/drive/v3/changes/startPageToken", {"$.xgafv": "9"}, None, 400, 400),
-    ("GET", "/drive/v3/changes/startPageToken", {"callback": "cb"}, None, 200, 401),
     ("GET", "/drive/v3/changes/startPageToken", {"callback": "cb"}, "bad", 200, 401),
     ("GET", "/drive/v3/changes/startPageToken", {"callback": "a b"}, None, 200, 400),
-    ("GET", "/drive/v3/files/x/comments", {"callback": "cb"}, None, 200, 403),
-    ("GET", "/gmail/v1/users/me/drafts", {"callback": "cb"}, None, 200, 401),
     ("PATCH", "/drive/v3/files/x", {"$.xgafv": "9"}, "bad", 400, 400),
     ("PATCH", "/drive/v3/files/x", {"callback": "cb"}, None, 401, 401),
     ("PATCH", "/drive/v3/files/x", {"callback": "a b"}, None, 401, 401),
@@ -2668,8 +2670,11 @@ def test_an_unserved_operation_reads_the_system_parameters_first(
     assert r.status_code == status, r.text
     error = _jsonp(r, params["callback"]) if status == 200 else _gerr(r)
     assert error["error"]["code"] == code if status == 200 else error["code"] == code
+    if status == 200 and params["callback"] == "cb":
+        plain = client.request(method, path, headers=headers)
+        assert r.text == f"// API callback\ncb({plain.text});"
     if code == 401:
-        assert "www-authenticate" in r.headers
+        assert r.headers["www-authenticate"] == (_CHALLENGED if caller == "bad" else _CHALLENGE)
 
 
 # --- a `HEAD`, and a trailing slash ------------------------------------------------------------
@@ -2875,8 +2880,11 @@ def test_google_a_trailing_slash_is_not_part_of_the_path(
 #   indentation   two spaces and a trailing newline on an error, whatever `prettyPrint` says
 #   charset       `application/json; charset=UTF-8` on the plain body
 #
-# The five anonymous errors below are one GET per family from `_NO_CREDENTIAL_ROWS`, because one
-# request per family is what real was asked.
+# The anonymous errors below are one GET per family from `_NO_CREDENTIAL_ROWS`, because one request
+# per family is what real was asked, then three operations Backlot does not serve
+# (``routers.google.refuse_an_unserved_operation``). Real answered those three as it does the five
+# on 2026-10-13: indented under the charset, the script around the plain body, an empty `callback`
+# as none, and `alt` spelt `json`, `JSON`, `Json` or empty keeping the script.
 
 JSONP_FAMILY_ERRORS = [
     ("/drive/v3/files", 403),
@@ -2884,6 +2892,9 @@ JSONP_FAMILY_ERRORS = [
     ("/gmail/v1/users/me/profile", 401),
     ("/docs/v1/documents/x", 401),
     ("/slides/v1/presentations/x", 401),
+    ("/drive/v3/changes/startPageToken", 401),
+    ("/drive/v3/files/x/comments", 403),
+    ("/gmail/v1/users/me/drafts", 401),
 ]
 
 CALLBACK_REFUSAL = (
@@ -2964,8 +2975,7 @@ def test_a_callback_answers_an_error_at_200_as_a_script(client, path, code):
     assert r.text == f"// API callback\ncb({plain.text});"
     assert json.loads(r.text[len("// API callback\ncb(") : -2])["error"]["code"] == code
     # the 401's challenge rides on the script too (``errors.google._CHALLENGE``)
-    challenge = 'Bearer realm="https://accounts.google.com/"' if code == 401 else None
-    assert r.headers.get("www-authenticate") == challenge
+    assert r.headers.get("www-authenticate") == (_CHALLENGE if code == 401 else None)
 
 
 def test_a_callback_wraps_a_success_and_an_error_through_the_same_serializer(
@@ -3791,6 +3801,7 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
             ("bearer", 503),
             ("nope", 503),
             ("Basic YWJjOmRlZg==", 503),
+            ("", 503),
         ):
             headers = {"Authorization": value}
             answer = client.get(url, params=bad, headers=headers)

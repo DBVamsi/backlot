@@ -188,13 +188,18 @@ def _batch_sub_response(r, base: str) -> str:
     request's base URL. The download redirect (:func:`gerr.download_redirect`), the 302 whose
     `Location` is under `base`'s `/download`, carries real's three headers, measured 2026-10-04 in
     this order: `Content-Length: 0`, though its error body follows, `Content-Type` and `Location`.
-    Any other part carries `Content-Type` alone, so the `Location` of a redirect a route builds from
-    the host the parts are dispatched to, which nothing answers, is not passed on."""
+    A part whose answer carries a `WWW-Authenticate`, a 401, passes it on ahead of `Content-Type`,
+    where real's 401 parts put it on 2026-10-13, on Drive's batch and on Sheets', for a missing
+    credential and for a bad one. Any other header stays behind, so the `Location` of a redirect a
+    route builds from the host the parts are dispatched to, which nothing answers, is not passed
+    on."""
     location = r.headers.get("location", "")
     redirect = r.status_code == 302 and location.startswith(f"{base}download/")
     lines = [f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}"]
     if redirect:
         lines.append("Content-Length: 0")
+    if "www-authenticate" in r.headers:
+        lines.append(f"WWW-Authenticate: {r.headers['www-authenticate']}")
     lines.append(f"Content-Type: {r.headers.get('content-type', 'application/json')}")
     if redirect:
         lines.append(f"Location: {location}")
@@ -319,7 +324,7 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     late."""
     present, token = _credential(request)
     if not present:
-        if download and request.headers.get("authorization"):
+        if download and "authorization" in request.headers:
             raise gerr.download_credential_refused()
         if download:
             raise gerr.missing_api_key()

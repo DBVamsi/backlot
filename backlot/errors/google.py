@@ -613,9 +613,10 @@ def download_credential_refused() -> GoogleError:
     its trailing slash.
 
     Measured 2026-10-11 on `files.get?alt=media` and `files.export`, each sent on its own:
-    `bearer nope`, `Basic YWJjOmRlZg==`, a bare `Bearer` and `nope` each answered this, where no
-    header at all is :func:`missing_api_key`'s 403 and `Bearer nope` the front end's own 401. It
-    stands where that 403 does among the download's refusals, after its parameters."""
+    `bearer nope`, `Basic YWJjOmRlZg==`, a bare `Bearer` and `nope` each answered this, and on
+    2026-10-13 an `Authorization` whose value is empty did too, where no header at all is
+    :func:`missing_api_key`'s 403 and `Bearer nope` the front end's own 401. It stands where that
+    403 does among the download's refusals, after its parameters."""
     return GoogleError(
         401,
         "Invalid Credentials",
