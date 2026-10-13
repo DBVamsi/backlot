@@ -305,12 +305,11 @@ def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
 def test_the_server_runs_on_the_interpreter_that_holds_its_files(
     platform, path, executable, base, starts_on_base, monkeypatch
 ):
-    """The server `serve` starts runs on the interpreter `backlot.server._interpreter` picks, which
-    is why and where its measurement lives: in a venv on Windows, `sys._base_executable` with the
-    environment `serve` built plus a `__PYVENV_LAUNCHER__` of `sys.executable`; in every other row,
-    `sys.executable` with that environment as built. Asserted on the `Popen` call, which is all a
-    run off Windows can see, with the platform, both paths and the path rules swapped on
-    `backlot.server`'s own view of `sys` and `os`."""
+    """Per row, the interpreter the server starts on and the environment it gets: the base
+    interpreter, and the built environment plus the launcher variable, only in a venv on Windows
+    (`backlot.server._interpreter` says why). Asserted on the call that starts it, which is all a
+    run off Windows can see, with the platform, both paths and the path rules swapped on that
+    module's own view of `sys` and `os`."""
     import backlot.server as server_mod
 
     view = SimpleNamespace(platform=platform, executable=executable, _base_executable=base)
@@ -328,8 +327,8 @@ def test_the_server_runs_on_the_interpreter_that_holds_its_files(
         seen.append((argv[0], kwargs["env"]))
         raise Started
 
-    # Nothing is served, so the import that would build the corpus only records the environment
-    # `serve` built; run for real it would also call the `Popen` above.
+    # Nothing is served, so the import only records the environment it is handed; a real run of it
+    # would reach the fake above as well.
     monkeypatch.setattr(server_mod.subprocess, "run", run)
     monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
     with pytest.raises(Started), backlot.serve():
