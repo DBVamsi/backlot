@@ -1092,9 +1092,10 @@ def head_refusal() -> Response:
     Sheets answers some with its host's HTML 404 page instead, and not by class of credential. On
     2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
     other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
-    on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; and another
-    Workspace member's token, with the `drive` and `gmail.readonly` scopes, got the 404 on each
-    Sheets path it was sent to. What picks the page was not found, so every caller gets the 400
+    on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; that member's
+    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths; and
+    another Workspace member's token, with the `drive` and `gmail.readonly` scopes, got the 404 on
+    each Sheets path it was sent to. What picks the page was not found, so every caller gets the 400
     here."""
     return Response(status_code=400, media_type="text/html")
 
