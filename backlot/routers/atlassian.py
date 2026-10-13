@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
@@ -219,10 +220,10 @@ def _jira_caller(request: Request) -> Caller:
 def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Caller:
     """The caller for a Confluence read, refusing where Jira would go anonymous.
 
-    Confluence rejects the request outright, and which refusal depends on the credential rather
-    than on the route: a pair it read and rejected, and a request carrying none, are its 403; a
-    Basic value it could not read is a 401 naming the site's OAuth realm. Measured on both sites
-    on 2026-09-04, every route and every credential shape (see ``auth.basic_credential_kind``).
+    Confluence rejects the request outright: a pair it read and rejected, and a request carrying
+    none, are a 403 (which one is the route's, below); a Basic value it could not read is a 401
+    naming the site's OAuth realm on every route. Measured on both sites on 2026-09-04, every route
+    and every credential shape (see ``auth.basic_credential_kind``).
 
     ``not_permitted`` picks the other anonymous 403, the one `search` gives
     (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
@@ -240,10 +241,9 @@ def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Call
             headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
         )
     if not_permitted:
-        # message first, as real orders it; `vendor_headers` adds search's cache-control and expires
         raise errors_atlassian.AtlassianError(
             403,
-            {"message": errors_atlassian.CONFLUENCE_NOT_PERMITTED, "statusCode": 403},
+            json.loads(errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY),
             media_type="application/json",
         )
     raise HTTPException(status_code=403, detail=errors_atlassian.CONFLUENCE_FORBIDDEN)
@@ -460,33 +460,71 @@ async def jira_project_roles(key: str, request: Request):
     return {"Users": f"{_site(request)}/rest/api/3/project/{key}/role/10002"}
 
 
+def _java_digit(ch: str, radix: int) -> int | None:
+    """``ch`` as Java's `Character.digit` reads it in ``radix``: a decimal digit of any script in
+    the Basic Multilingual Plane (`١`, `１`), and in hexadecimal `a` to `f` in either case,
+    full-width ones included (`Ａ`); a character past U+FFFF is two `char`s to Java, neither of them
+    a digit."""
+    if ord(ch) > 0xFFFF:
+        return None
+    decimal = unicodedata.decimal(ch, None)
+    if decimal is not None:
+        return decimal
+    folded = ch.lower()
+    for first in ("a", "\uff41"):
+        if radix == 16 and ord(first) <= ord(folded) <= ord(first) + 5:
+            return ord(folded) - ord(first) + 10
+    return None
+
+
 def _java_long(raw: str) -> int | None:
     """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
     (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
-    optional `-`, otherwise decimal digits with an optional sign, within a `long`. Measured on
-    `project/{key}/role/{id}` 2026-10-13: `-1`, `+1`, `%201`, `0x1` and 9223372036854775807 read,
-    and `abc`, `1.5`, `1e3` and 99999999999999999999 not."""
+    optional `-` in front, otherwise decimal with an optional sign, each digit as
+    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
+    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
     text = errors_atlassian.strip_java_whitespace(raw)
-    hexadecimal = re.fullmatch(r"(-?)(?:0[xX]|#)([0-9a-fA-F]+)", text)
-    if hexadecimal:
-        value = int(hexadecimal.group(2), 16) * (-1 if hexadecimal.group(1) else 1)
-    elif re.fullmatch(r"[+-]?\d+", text) and max(map(ord, text)) <= 0xFFFF:
-        value = int(text)
+    negative = text.startswith("-")
+    rest = text[1:] if negative else text
+    if rest.startswith(("0x", "0X", "#")):
+        radix, digits = 16, rest[1:] if rest.startswith("#") else rest[2:]
     else:
+        radix, digits = 10, (text[1:] if text.startswith(("+", "-")) else text)
+    if not digits:
         return None
+    value = 0
+    for ch in digits:
+        digit = _java_digit(ch, radix)
+        if digit is None:
+            return None
+        value = value * radix + digit
+        if value > 2**63:
+            return None
+    value = -value if negative else value
     return value if -(2**63) <= value < 2**63 else None
+
+
+def _role_id(request: Request, raw: str) -> int:
+    """A project role's id as real reads it (:func:`_java_long`), or the 400 it answers: one naming
+    the variable as missing where removing the whitespace leaves nothing
+    (``errors.atlassian.missing_path_variable``) and one naming the value it could not convert
+    otherwise. Real answers either ahead of the project's 404 and, on a write, behind its 415, for
+    every caller (2026-10-13)."""
+    if errors_atlassian.strip_java_whitespace(raw) == "":
+        raise errors_atlassian.missing_path_variable(_echoed_path(request), "id")
+    role = _java_long(raw)
+    if role is None:
+        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [raw])
+    return role
 
 
 @router.get("/rest/api/3/project/{key}/role/{role_id}")
 async def jira_project_role(
     key: str, request: Request, role_id: str = PathParameter(json_schema_extra={"type": "integer"})
 ):
-    """One project role. Its id is read the way real reads it (:func:`_java_long`), and one it
-    cannot read is the 400 naming it as `id`, ahead of the project's 404, for every caller
-    (measured 2026-10-13); the schema still declares the integer the vendor's document does."""
-    role = _java_long(role_id)
-    if role is None:
-        raise errors_atlassian.integer_conversion_failure(_echoed_path(request), "id", [role_id])
+    """One project role, its id read as :func:`_role_id` reads it; the schema still declares the
+    integer the vendor's document does."""
+    role = _role_id(request, role_id)
     conn = auth.conn(request)
     container = _require_project(request, conn, key)
     actors = []
@@ -3027,6 +3065,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     refused = _jira_media_refusal(request, operation)
     if refused is not None:
         raise refused
+    if operation in _JIRA_ROLE_WRITES:
+        _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
         operation in _JIRA_UNSERVED["refused"]
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))

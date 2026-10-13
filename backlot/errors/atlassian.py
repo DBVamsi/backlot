@@ -1,4 +1,4 @@
-"""Atlassian Cloud's error envelope.
+"""Atlassian Cloud's error envelopes.
 
 Atlassian clients (atlassian-python-api, which mcp-atlassian uses) parse an error body as Atlassian
 Cloud's shape — Confluence's ``raise_for_status`` does ``response.json()["message"]`` — so FastAPI's
@@ -6,9 +6,10 @@ default ``{"detail": …}`` turns every error into a cryptic ``KeyError: 'messag
 rather than the error Backlot meant to report. The two products do not share an envelope, and
 :func:`http_body` answers each in the one it measures.
 
-That envelope is not the only shape either product answers in: a refusal real gives in a shape
+Neither envelope is the only shape its product answers in: a refusal real gives in a shape
 measured to differ carries its own body on an :class:`AtlassianError` and is served verbatim.
-Reading a query parameter is where the two visibly part — see :func:`integer_conversion_failure`.
+Reading a query parameter is one such refusal, in a different shape on each product — see
+:func:`integer_conversion_failure`.
 
 Nor is the body always JSON. A path neither product serves is Jira's RFC 7807 :func:`no_endpoint`,
 Confluence's JAX-RS 404 in whichever of two shapes `Accept` asks for (:func:`jaxrs_not_found`), or
@@ -39,11 +40,12 @@ PROBLEM_JSON = "application/problem+json;charset=UTF-8"
 
 # The two refusals Confluence gives a caller it will not serve, measured against
 # ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04. A credential it read and
-# rejected, and a request that carried none, both get the 403 below verbatim — the vendor reports
-# its own exception class in the message, and a client that logs the body logs that. A Basic value
-# it could not read gets a 401 instead, whose real body is Tomcat's HTML page titled "HTTP Status
-# 401 - Unauthorized"; that title is the message here, because the envelope this module exists to
-# emit is JSON and a client parsing `message` out of the page would find nothing.
+# rejected, and a request that carried none, get the 403 below verbatim on every served route but
+# `search` (:data:`CONFLUENCE_NOT_PERMITTED_BODY`) — the vendor reports its own exception class in
+# the message, and a client that logs the body logs that. A Basic value it could not read gets a 401
+# instead, whose real body is Tomcat's HTML page titled "HTTP Status 401 - Unauthorized"; that title
+# is the message here, because the envelope this module exists to emit is JSON and a client parsing
+# `message` out of the page would find nothing.
 CONFLUENCE_FORBIDDEN = (
     "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
     '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
@@ -193,7 +195,8 @@ def _instance(path: str) -> str:
 
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
-    Jira also answers for one it cannot read as a boolean.
+    Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
+    a `long` (``backlot.routers.atlassian._role_id``).
 
     Measured on brekkylab.atlassian.net, 2026-09-14, on `GET /rest/api/3/issue/{key}/comment` and
     `GET /wiki/rest/api/space`. The two bodies share no key: Jira's is RFC 7807 naming the
@@ -237,6 +240,23 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
             "title": "Bad Request",
             "status": 400,
             "detail": f"Failed to convert '{name}' with value: '{shown}'",
+            "instance": _instance(path),
+        },
+        media_type=PROBLEM_JSON,
+    )
+
+
+def missing_path_variable(path: str, name: str) -> AtlassianError:
+    """Jira's 400 for a path variable that is whitespace and nothing else, which Spring reads as
+    absent: RFC 7807 saying `Required path variable '<name>' is not present.`, measured 2026-10-13
+    on `project/{key}/role/{id}` with `%20`, `%09` and `%E2%80%83`."""
+    return AtlassianError(
+        400,
+        {
+            "type": "about:blank",
+            "title": "Bad Request",
+            "status": 400,
+            "detail": f"Required path variable '{name}' is not present.",
             "instance": _instance(path),
         },
         media_type=PROBLEM_JSON,
@@ -882,8 +902,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     Neither product answers this refusal in its :func:`http_body` envelope, and they part in two
     directions — Confluence's `errors` is a LIST carrying no `Allow`, Jira's is RFC 7807 on
     `application/problem+json` naming the methods that path takes (the table above). A client
-    reading `errors[0]["code"]` is the one Confluence's shape serves: its envelope has no `errors`
-    at all.
+    reading `errors[0]["code"]` is the one Confluence's 405 serves; Confluence's served-route
+    envelope (:func:`_confluence_envelope`) has no `errors` at all.
 
     ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on the
     Confluence side. Starlette would compute one there from the catch-all

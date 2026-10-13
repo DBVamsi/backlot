@@ -258,7 +258,8 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     )
     assert r.status_code == 403
     # The whole body, not a subset: this one route answers with a single `error` key, where every
-    # other Atlassian error here carries message/statusCode/errorMessages. Byte for byte, spelled as
+    # other Jira error on a served route carries `errorMessages` and `errors`
+    # (``errors.atlassian._jira_envelope``). Byte for byte, spelled as
     # ``backlot.main.refuse_a_bearer_jira_cannot_read`` says real spells it.
     assert r.content == b'{"error": "Failed to parse Connect Session Auth Token"}'
     # No Seraph header either — that one reports a failed Basic username, and this is not one.
@@ -1677,46 +1678,129 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
     assert "expand" not in declared
 
 
+# --- a project role's id: a `long` path variable, read before the project ---------------------
+
+_MISSING_ID = "Required path variable 'id' is not present."
+
+
+def _unconverted(role_id: str) -> str:
+    return f"Failed to convert 'id' with value: '{unquote(role_id)}'"
+
+
+@pytest.mark.parametrize(
+    "method,role_id,caller,body,status,answer",
+    [
+        # what a `long` path variable reads (``backlot.routers.atlassian._java_long``): the project
+        # lookup comes next, the 404 a caller who sees no project gets
+        *(
+            ("GET", role_id, "none", None, 404, None)
+            for role_id in (
+                "-1",
+                "+1",
+                "01",
+                "%201",
+                "1%20",
+                "%E2%80%83%201",
+                "0x1",
+                "0x01",
+                "-0x1",
+                "0X1",
+                "-%231",
+                "%D9%A3",
+                "%EF%BC%91",
+                "0x%EF%BC%91",
+                "0x%EF%BC%A1",
+                "9223372036854775807",
+                "-9223372036854775808",
+                "0x7fffffffffffffff",
+                "-0x8000000000000000",
+                "0" * 4400 + "1",
+            )
+        ),
+        # what it does not, the 400 naming the value
+        *(
+            ("GET", role_id, "none", None, 400, _unconverted(role_id))
+            for role_id in (
+                "abc",
+                "1.5",
+                "1.0",
+                "1e3",
+                "1_0",
+                "+",
+                "-",
+                "--1",
+                "+-1",
+                "+0x1",
+                "+%231",
+                "0x",
+                "0x-1",
+                "0x1g",
+                "00x1",
+                "%C2%A01",
+                "1%C2%A0",
+                "%F0%9D%9F%8F",
+                "99999999999999999999",
+                "9223372036854775808",
+                "-9223372036854775809",
+                "0x8000000000000000",
+            )
+        ),
+        # whitespace alone, which leaves the variable missing
+        ("GET", "%20", "none", None, 400, _MISSING_ID),
+        ("GET", "%E2%80%83", "none", None, 400, _MISSING_ID),
+        # a caller who sees the project gets the same 400, and the id as read
+        ("GET", "abc", "admin", None, 400, _unconverted("abc")),
+        ("GET", "-0x1", "admin", None, 200, -1),
+        ("GET", "1%E2%80%831", "admin", None, 200, 11),
+        # the writes read it behind their 415 and ahead of the project
+        ("DELETE", "abc", "none", None, 400, _unconverted("abc")),
+        ("DELETE", "%20", "none", None, 400, _MISSING_ID),
+        ("POST", "abc", "none", "{}", 400, _unconverted("abc")),
+        ("PUT", "abc", "none", "{}", 400, _unconverted("abc")),
+        ("POST", "abc", "admin", "{}", 400, _unconverted("abc")),
+        ("PUT", "abc", "none", None, 415, "Content-Type 'null' is not supported."),
+        ("DELETE", "-0x1", "none", None, 404, None),
+    ],
+)
+def test_jira_reads_a_role_id_as_a_long_before_the_project(
+    client, admin_h, method, role_id, caller, body, status, answer
+):
+    """Each row as ``backlot.routers.atlassian._role_id`` reads the id, which real answered the same
+    with and without a credential; the project is one the anonymous caller cannot see and the admin
+    can."""
+    key = synth.jira_project_key("payments")
+    headers = dict(admin_h) if caller == "admin" else {}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    r = client.request(
+        method, f"/atlassian/rest/api/3/project/{key}/role/{role_id}", headers=headers, content=body
+    )
+    assert r.status_code == status, r.text
+    if status in (400, 415):
+        assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+        assert r.json()["detail"] == answer
+        if "%" not in role_id:
+            assert r.json()["instance"] == f"/rest/api/3/project/{key}/role/{role_id}"
+    elif status == 200:
+        assert r.json()["id"] == answer
+    else:
+        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
+
+
+def test_jira_role_declares_its_id_as_the_integer_the_document_does(client):
+    """The route reads the id as text so that it can answer real's 400s itself; the schema keeps
+    the integer Jira's document declares."""
+    op = client.app.openapi()["paths"]["/atlassian/rest/api/3/project/{key}/role/{role_id}"]["get"]
+    (role_id,) = [p for p in op["parameters"] if p["name"] == "role_id"]
+    assert role_id["schema"]["type"] == "integer"
+
+
 # --- how a query parameter is READ: conversion, range, repetition -------------------------
 
 # Measured on brekkylab.atlassian.net, 2026-09-14. The two products refuse a type-conversion
 # failure in DIFFERENT envelopes, neither of them `errors.atlassian.http_body`'s: Jira answers RFC
 # 7807 on `application/problem+json`, Confluence its own two-key body carrying a raw Java
 # exception string on a bare `application/json`.
-
-
-@pytest.mark.parametrize(
-    "role_id,status",
-    [
-        # what a `long` path variable reads (``backlot.routers.atlassian._java_long``): the project
-        # lookup comes next, the 404 a caller who sees no project gets
-        ("-1", 404),
-        ("+1", 404),
-        ("%201", 404),
-        ("0x1", 404),
-        ("9223372036854775807", 404),
-        # and what it does not, the 400
-        ("abc", 400),
-        ("1.5", 400),
-        ("1e3", 400),
-        ("99999999999999999999", 400),
-    ],
-)
-def test_jira_reads_a_role_id_as_a_long_before_the_project(client, role_id, status):
-    key = synth.jira_project_key("payments")
-    r = client.get(f"/atlassian/rest/api/3/project/{key}/role/{role_id}")
-    assert r.status_code == status, r.text
-    if status == 400:
-        assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
-        assert r.json() == {
-            "type": "about:blank",
-            "title": "Bad Request",
-            "status": 400,
-            "detail": f"Failed to convert 'id' with value: '{unquote(role_id)}'",
-            "instance": f"/rest/api/3/project/{key}/role/{role_id}",
-        }
-    else:
-        assert r.json()["errorMessages"] == [f"No project could be found with key '{key}'."]
 
 
 # the path a refusal echoes, as `_echoed_path` gives it
