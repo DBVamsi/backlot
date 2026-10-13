@@ -9,7 +9,6 @@ just the README.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -19,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from backlot.validation import SERVICE_SCHEMAS
+from tests._helpers import python_child_env
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -170,10 +170,10 @@ def test_generated_docs_are_current():
     proc = subprocess.run(
         [sys.executable, "scripts/gen_docs.py", "--check"],
         cwd=REPO,
-        # The child process is outside pyproject.toml's EncodingWarning filter, so it gets the
-        # same rule by hand: under PYTHONWARNDEFAULTENCODING=1 a text file the script opens
-        # without encoding= ends it, as it would end a test.
-        env={**os.environ, "PYTHONWARNINGS": "error::EncodingWarning"},
+        # The child process is outside pyproject.toml's EncodingWarning filter, so it gets a
+        # stricter form of the rule by hand: under PYTHONWARNDEFAULTENCODING=1 any EncodingWarning
+        # in it, a dependency's included, ends it.
+        env=python_child_env(PYTHONWARNINGS="error::EncodingWarning"),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -201,7 +201,7 @@ def test_gen_docs_renders_from_its_own_tree(tmp_path):
     schema = json.loads(schema_file.read_text(encoding="utf-8"))
     schema["description"] = "A record from the shadow tree. " + schema["description"]
     schema_file.write_text(json.dumps(schema), encoding="utf-8")
-    env = {**os.environ, "PYTHONPATH": str(shadow)}
+    env = python_child_env(PYTHONPATH=str(shadow))
 
     # The control: under this environment a bare import does get the shadow, and the shadow's slack
     # schema is the changed one, whose first sentence is what the docs table's last column holds.

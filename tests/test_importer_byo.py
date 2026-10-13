@@ -20,7 +20,8 @@ from backlot.routers.slack import _message
 from tests._helpers import complete, served_id
 
 # Two importer behaviours that fail these tests on Windows, each marked strict so a test that
-# starts to pass there reports XPASS and fails until its mark is removed. Measured on Windows 11
+# starts to pass there reports XPASS and fails until its mark is removed; the `windows` mark beside
+# it keeps the test in the Windows workflow's pull-request run after that. Measured on Windows 11
 # with Python 3.14.0 on 2026-10-13.
 #
 # A refused fresh load puts the previous DB back by unlinking the half-built one, and
@@ -706,6 +707,7 @@ def test_byo_slack_edited_user_must_be_the_messages_own_author(tmp_path, on):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     """A channel's members are the people who have spoken in it and what a caller may read is the
@@ -747,6 +749,7 @@ def test_byo_a_speaker_outside_a_private_channels_readers_is_refused(tmp_path):
     load(nobody, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
     """The asymmetry a reply's refusal created: a root's own `created` took the
@@ -880,6 +883,7 @@ def test_byo_reply_clock_refuses_unservable_numbers(tmp_path, bad):
         load(corpus, Settings(data_dir=tmp_path))
 
 
+@pytest.mark.windows
 @_PRE_1970_IS_UNREADABLE_ON_WINDOWS
 def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     """`_epoch` answers None rather than raising, for every shape a corpus can put in a
@@ -4745,6 +4749,7 @@ def test_byo_a_jira_provider_appended_in_a_later_batch_is_refused(tmp_path):
     assert served == {"v": before}
 
 
+@pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
     """notion was the one hierarchy source that stored a parent without checking it: its id is a
@@ -4786,6 +4791,7 @@ def test_byo_a_notion_parent_must_name_an_imported_page(tmp_path):
     conn.close()
 
 
+@pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_byo_a_failed_fresh_import_leaves_the_previous_corpus_in_place(tmp_path):
     """A fresh load replaces a corpus, and it did so by deleting the old DB before reading a single
@@ -5712,6 +5718,7 @@ def test_an_unwritable_id_map_is_refused_before_the_load_starts(tmp_path, reset)
     assert settings.tokens_path.read_text(encoding="utf-8") == tokens_before
 
 
+@pytest.mark.windows
 @_REFUSED_LOAD_LEAVES_ITS_DB_OPEN_ON_WINDOWS
 def test_a_refused_load_leaves_no_id_map_behind(tmp_path):
     """The up-front check opens the destination for append, which is the only way to learn that an
