@@ -855,6 +855,16 @@ def derive_title_content(raw: dict) -> tuple[str, str]:
     return title, "\n\n".join(p for p in parts if p).strip()
 
 
+def _read_json(path: Path):
+    """``path``'s JSON, or None when the file cannot be read as JSON: an OSError, bytes that are not
+    UTF-8, text that is not JSON or holds an integer past Python's 4300-digit limit (each a
+    ValueError), or nesting too deep to parse (a RecursionError)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError, OSError):
+        return None
+
+
 def iter_records(
     sources_dir: Path, sources: tuple[str, ...] = SUPPORTED
 ) -> Iterator[tuple[str, str, dict]]:
@@ -863,9 +873,8 @@ def iter_records(
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.json")):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            raw = _read_json(path)
+            if raw is None:
                 continue
             dsid = raw.get("dataset_doc_uuid")
             if dsid:
@@ -986,10 +995,7 @@ def read_snapshot(gen_dir) -> dict | None:
     path = Path(gen_dir) / SNAPSHOT_FILE
     if not path.exists():
         return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    return _read_json(path)
 
 
 def parse_gmail_thread(messages: list[str]) -> list[dict]:
