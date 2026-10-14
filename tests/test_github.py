@@ -6065,7 +6065,7 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert "x-github-api-version-selected" not in anon_unmatched.headers
     anon_again = _ratelimit(c.get("/github/nonexistent-route-zz"))
     assert int(anon_again["used"]) == int(_ratelimit(anon_unmatched)["used"]) + 1
-    # see `_some_github_route_matches` for the measurement of a header real reads as no credential
+    # see `_github_routes` for the measurement of a header real reads as no credential
     basic = c.get("/github/nonexistent-route-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="})
     assert basic.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in basic.headers)
