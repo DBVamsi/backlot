@@ -2602,38 +2602,40 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     assert r.json() == {"detail": "Method Not Allowed"}
 
 
-#: (method, path, whether it is refused, the admin token's answer). The first six are in
-#: `backlot.routers.github._PUBLISHED_NOT_SERVED`; the last two are baseline rows that
-#: `_ROUTED_AS` and `_NOT_ROUTED` keep out of it.
+#: (method, path, whether it is refused, the status a caller it does not refuse gets). The first seven
+#: are in `backlot.routers.github._PUBLISHED_NOT_SERVED`; the next two are baseline rows that
+#: `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the last is a method GitHub does not publish on a
+#: path whose `PATCH` it does, which real answered `Bearer nope` with its 404.
 _UNSERVED_ROWS = [
     ("PATCH", "/repos/{org}/codebase", True, 405),
     ("DELETE", "/repos/{org}/codebase", True, 405),
     ("POST", "/repos/{org}/codebase/forks", True, 404),
     ("GET", "/user/packages", True, 404),
     ("DELETE", "/user/keys/1", True, 404),
+    ("PUT", "/teams/1/repos/{org}/codebase", True, 404),
     ("GET", "/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/repos/{org}/codebase/releases/1/assets", False, 404),
+    ("PUT", "/orgs/{org}", False, 405),
 ]
 
 
-@pytest.mark.parametrize("method, path, refused, admin_status", _UNSERVED_ROWS)
+@pytest.mark.parametrize("method, path, refused, status", _UNSERVED_ROWS)
 def test_github_an_unserved_operation_is_refused_for_its_credential_first(
-    gh_client, gh_admin_h, gh_org, method, path, refused, admin_status
+    gh_client, gh_admin_h, gh_org, method, path, refused, status
 ):
     """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
     records of real: the credential's 401 with no header, with or without a version, and with
     `Bearer nope`, then the router's own 404 or 405 for the admin token, which gets the version's
-    400 first. The other two are the 404 for any caller. Real was measured on each row with
-    `Bearer nope`, and with no header on the first five.
+    400 first, counted. A row not refused is the router's answer for any caller. Real was measured
+    on each row with `Bearer nope`, and with no header on the first six.
     """
     c, _ = gh_client
     url = "/github" + path.format(org=gh_org)
     bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
     if not refused:
         for headers in ({}, {"Authorization": "Bearer nope"}, gh_admin_h, bad_version):
-            r = c.request(method, url, headers=headers)
-            assert (r.status_code, r.json()["message"]) == (404, "Not Found"), headers
+            assert c.request(method, url, headers=headers).status_code == status, headers
         return
     for headers in ({}, bad_version):
         r = c.request(method, url, headers=headers)
@@ -2643,9 +2645,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert counted == (method in ("GET", "POST"))
     bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
     assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    assert c.request(method, url, headers=gh_admin_h).status_code == admin_status
+    assert c.request(method, url, headers=gh_admin_h).status_code == status
     unversioned = c.request(method, url, headers={**gh_admin_h, **bad_version})
     assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
+    assert any(name.startswith("x-ratelimit-") for name in unversioned.headers)
 
 
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
