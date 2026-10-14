@@ -543,17 +543,20 @@ An object's GET and HEAD also read the six `response-*` query parameters, `respo
 200 and the 206, every one but `Content-Type` on a 304, and leaves the bytes as stored. Their names
 are case-sensitive, a repeated one is read from its first value, and a control character other than
 a tab comes back as a space. A value real cannot put in a header, a non-Latin-1 character or an
-unclosed quote, is its 400 `InvalidArgument`, and an unsigned GET or HEAD carrying an override its
-400 `InvalidRequest`.
+unclosed quote, is its 400 `InvalidArgument`, at a bucket's path too, where an override sets
+nothing, and so is a name that starts with `response-` and is not one of the six; an override on an
+object's GET or HEAD sent unsigned is its 400 `InvalidRequest`, unless a sub-resource or a
+`versionId` other than `null` is beside it.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A
 sub-resource whose operations are all on another method, `?delete` and a key's `?restore` and
 `?select` among them, is the 405 a GET or a HEAD naming it gets, and a key's `?uploads` on a GET is
 real's 400. A `?partNumber` at a bucket's path, which names a part of an object, is real's 400 on a
-GET, a HEAD, a `PUT`, a `POST`, a `DELETE` and a `PATCH`, and beside `?uploadId` it is UploadPart's
-405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the bucket is
-found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
+GET, a HEAD, a `PUT`, a `POST`, a `DELETE`, a `PATCH` and an `OPTIONS`. Beside `?uploadId` an
+`OPTIONS` reaches the CORS preflight, while a GET, a HEAD, a `POST`, a `DELETE` and a `PATCH` get
+UploadPart's 405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the
+bucket is found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
 `?notification`, `?policy`, `?replication`, `?requestPayment`, `?versioning` and `?website` are the
 bucket's answer whatever the key, and `?logging` and `?versions` real's 400s; a bucket's other
 sub-resources are ignored there, as on real. A `versionId` at a bucket's path is real's 400 on a GET
