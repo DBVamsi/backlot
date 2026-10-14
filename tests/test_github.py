@@ -2602,8 +2602,8 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     assert r.json() == {"detail": "Method Not Allowed"}
 
 
-#: (method, path, whether it is refused, the status a caller it does not refuse gets). The first seven
-#: are in `backlot.routers.github._PUBLISHED_NOT_SERVED`; the next two are baseline rows that
+#: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
+#: seven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`; the next two are baseline rows that
 #: `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the last is a method GitHub does not publish on a
 #: path whose `PATCH` it does, which real answered `Bearer nope` with its 404.
 _UNSERVED_ROWS = [
