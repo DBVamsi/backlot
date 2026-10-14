@@ -135,18 +135,22 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and every response reports
-its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
-real's code search backend does not read the header, so a pinned version there is served whatever
-it says and no response from it carries the `Selected` header (measured 2026-09-06).
+unpinned request gets `2022-11-28`, anything else is the real API's 400, and a response reports its
+choice in `X-GitHub-Api-Version-Selected` but on the answers `backlot.main.echo_github_api_version`
+names. `search/code` is the one route that does neither: real's code search backend does not read
+the header, so a pinned version there is served whatever it says and no response from it carries the
+`Selected` header (measured 2026-09-06).
 
-**An operation GitHub publishes and Backlot does not serve is refused for its credential first**,
-as a served route is: a token that does not resolve is the 401 "Bad credentials", no
-`Authorization` header the 401 "Requires authentication", each ahead of the version's 400, and a
-token that resolves reaches the 404 or 405 of an operation Backlot cannot run. The operations are
-the GitHub baseline's `missing_operation` rows. `Authorization` is read as real reads it, so
-`Bearer` or `token` with nothing after it and a `Basic` value that is not base64 are credentials
-that do not resolve, where a `Basic` value that decodes is no credential at all.
+**An operation GitHub publishes and Backlot does not serve is refused for its credential first**:
+a token that does not resolve is the 401 "Bad credentials", as on a served route, and no
+`Authorization` header is the 401 "Requires authentication", each ahead of an unsupported version's
+400, where the served `/user/repos` checks the version before a missing credential. A token that
+resolves reaches the 404 or 405 of an operation Backlot cannot run. The operations are the GitHub
+baseline's `missing_operation` rows, but `POST …/releases/{id}/assets`, which api.github.com does
+not route, and with `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as
+real reads it: `Bearer` or `token` with nothing after it, and a `Basic` value that is not base64,
+are credentials that do not resolve; a `Basic` value whose base64 holds a token, before or after
+its colon, is that token; and one that holds none is no credential at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,

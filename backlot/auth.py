@@ -66,18 +66,20 @@ def github_credential(request: Request) -> str | None:
         Basic, in any case, alone, followed by a comma, or followed       401
           by a value that is not base64 once its spaces are dropped:
           a, abcde, ====, Zm9vOmJhcg, -_-_, a=bc, abcd=, !!!!, ab<TAB>cd
-        Basic followed by base64: abcd, Zm9vOmJhcg==, +/+/, ab==,         200
-          ab cd, a b c d
+        Basic followed by base64 that names no token: abcd,               200
+          Zm9vOmJhcg==, +/+/, ab==, abc=, ab cd, a b c d
         any other first word, or none: nope, Digest, OAuth, Bear,         200
           Bearerx, bearer:, Bearer=
 
     And with a token that resolves: ``Bearer <t>``, ``bearer <t>``, ``token <t>``, a second space
-    or a tab before it are its 200; ``Bearer,<t>``, ``Bearer ,<t>``, ``Bearer <t> x``,
+    or a tab before it are its 200, and so is ``Basic`` with the base64 of ``x:<t>``,
+    ``<t>:x-oauth-basic``, ``<t>:`` or ``<t>``; ``Bearer,<t>``, ``Bearer ,<t>``, ``Bearer <t> x``,
     ``Bearer <t>,`` and ``Basic <t>`` are the 401; ``<t>`` alone is served as anonymous.
 
-    So real splits the scheme off at the first space, tab or comma, and serves a `Basic` value
-    that decodes as no credential at all, as it does an unknown scheme. :func:`bearer_token`
-    reads a scheme with nothing after it, a comma after one and every `Basic` value as no header.
+    So real splits the scheme off at the first space, tab or comma, reads a token from either side
+    of the colon in a `Basic` value that decodes, and serves one that names no token as no
+    credential at all, as it does an unknown scheme. :func:`bearer_token` reads a scheme with
+    nothing after it, a comma after one and every `Basic` value as no header.
     """
     scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip()).groups()
     scheme = scheme.lower()
@@ -85,7 +87,10 @@ def github_credential(request: Request) -> str | None:
         return rest.strip()
     if scheme == "basic":
         value = rest.lstrip(" \t").replace(" ", "")
-        return None if value and _GITHUB_BASE64.fullmatch(value) else ""
+        if not value or not _GITHUB_BASE64.fullmatch(value):
+            return ""
+        user, _, password = base64.b64decode(value).decode("utf-8", "replace").partition(":")
+        return next((t for t in (password, user) if acl(request).resolve(t) is not None), None)
     return None
 
 

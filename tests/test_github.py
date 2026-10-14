@@ -2266,10 +2266,10 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
         "documentation_url": "https://docs.github.com/rest",
         "status": "401",
     }
-    for unparseable in ("Basic Zm9vOmJhcg==", "just-a-value"):
-        r = c.get(url, headers={"Authorization": unparseable})
+    for no_credential in ("Basic Zm9vOmJhcg==", "just-a-value"):
+        r = c.get(url, headers={"Authorization": no_credential})
         assert r.status_code == 401 and r.json()["message"] == "Requires authentication", (
-            unparseable
+            no_credential
         )
     for value in (
         "Bearer usr-not-a-real-token",
@@ -2586,10 +2586,10 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
-    """Every route here declares GET, so a wrong method is refused by Starlette with
-    `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which answers a
-    wrong method per endpoint rather than uniformly (an unauthenticated `POST /repos/{owner}/{repo}`
-    is real's 401 Requires authentication, measured).
+    """Every route here declares GET, so a wrong method that reaches the router is refused by
+    Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which
+    answers a wrong method per endpoint rather than uniformly (an unauthenticated
+    `POST /repos/{owner}/{repo}` is real's 401 Requires authentication, measured).
 
     So it keeps FastAPI's `detail`, which says plainly that the mock is answering. The envelope is
     for the errors whose wording was measured. `HEAD` is not a wrong method here: real answers it
@@ -2603,9 +2603,11 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: seven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`; the next two are baseline rows that
-#: `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the last is a method GitHub does not publish on a
-#: path whose `PATCH` it does, which real answered `Bearer nope` with its 404.
+#: eight are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
+#: `/organizations/{id}` is rewritten to; the next two are baseline rows that `_ROUTED_AS` and
+#: `_NOT_ROUTED` keep out of it; `/zen%23` is no operation, though `request.url.path` ends at its
+#: `#`; and the last is a method GitHub does not publish on a path whose `PATCH` it does, which real
+#: answered `Bearer nope` with its 404.
 _UNSERVED_ROWS = [
     ("PATCH", "/repos/{org}/codebase", True, 405),
     ("DELETE", "/repos/{org}/codebase", True, 405),
@@ -2614,8 +2616,10 @@ _UNSERVED_ROWS = [
     ("DELETE", "/user/keys/1", True, 404),
     ("PUT", "/teams/1/repos/{org}/codebase", True, 404),
     ("GET", "/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
+    ("GET", "/organizations/1/settings/billing/usage", True, 404),
     ("GET", "/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/repos/{org}/codebase/releases/1/assets", False, 404),
+    ("GET", "/zen%23", False, 404),
     ("PUT", "/orgs/{org}", False, 405),
 ]
 
@@ -2626,9 +2630,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
 ):
     """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
     records of real: the credential's 401 with no header, with or without a version, and with
-    `Bearer nope`, then the router's own 404 or 405 for the admin token, which gets the version's
-    400 first, counted. A row not refused is the router's answer for any caller. Real was measured
-    on each row with `Bearer nope`, and with no header on the first six.
+    `Bearer nope`, then the router's own 404 or 405 for the admin token, carrying the version echo
+    as real's answer to a token did on `GET /user/packages`, and the version's 400 ahead of it,
+    counted. A row not refused is the router's answer for any caller. Real was measured on each row
+    with `Bearer nope`, and with no header on the first six.
     """
     c, _ = gh_client
     url = "/github" + path.format(org=gh_org)
@@ -2645,7 +2650,9 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert counted == (method in ("GET", "POST"))
     bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
     assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    assert c.request(method, url, headers=gh_admin_h).status_code == status
+    admin = c.request(method, url, headers=gh_admin_h)
+    assert admin.status_code == status
+    assert admin.headers["x-github-api-version-selected"] == "2022-11-28"
     unversioned = c.request(method, url, headers={**gh_admin_h, **bad_version})
     assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
     assert any(name.startswith("x-ratelimit-") for name in unversioned.headers)
@@ -5739,8 +5746,8 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
         assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
 
-        # the route reads the version header from any request carrying an `Authorization`, an
-        # unparseable one included, and from no other
+        # the route reads the version header from any request carrying an `Authorization`, one
+        # real reads as no credential included, and from no other
         unparseable = {"Authorization": "Basic Zm9vOmJhcg=="}
         pinned = c.get(
             "/github/rate_limit", headers={**unparseable, "X-GitHub-Api-Version": "2026-03-10"}
@@ -5761,7 +5768,7 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # the same unsupported version with no credential is the 400 on any other route
         assert c.get(repo, headers={"X-GitHub-Api-Version": "1999-01-01"}).status_code == 400
 
-        # an `Authorization` real cannot parse is counted apart from the address's bare anonymous
+        # an `Authorization` real reads as no credential is counted apart from the address's bare
         # calls, in ONE window rather than one per value
         address = int(_ratelimit(c.get("/github/user/repos"))["used"])
         first = _ratelimit(c.get("/github/user/repos", headers=unparseable))
@@ -5906,10 +5913,10 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert bad_bearer.status_code == 401
         assert not any(n.startswith("x-ratelimit-") for n in bad_bearer.headers)
 
-        # a credential the gate treats specially — one that arrived but does not parse — still
-        # gets the ordinary 404 for a path no route matches, not this refusal: the gate needs a
-        # matched route OR no `Authorization` header at all (see `_some_github_route_matches`),
-        # and `Basic ...` on an unmatched path satisfies neither.
+        # a header the gate treats specially — one real reads as no credential — still gets the
+        # ordinary 404 for a path real does not route, not this refusal: the gate needs a path
+        # real routes OR no `Authorization` header at all (see `_github_routes`), and `Basic ...`
+        # on an unmatched path satisfies neither.
         basic_unmatched = c.get(
             "/github/nonexistent-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="}
         )
@@ -6036,8 +6043,8 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
         assert not any(n.startswith("x-ratelimit-") for n in rate_limit_slash.headers)
     assert _ratelimit(c.get("/github/rate_limit"))["used"] == before["used"]
 
-    # a path no route matches at all answers like the trailing-slash spelling of one (see
-    # `_some_github_route_matches`)
+    # a path real does not route answers like the trailing-slash spelling of one (see
+    # `_github_routes`)
     unmatched = c.get("/github/nonexistent-route-zz", headers=gh_admin_h)
     assert unmatched.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in unmatched.headers)
@@ -6051,7 +6058,7 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     assert "x-github-api-version-selected" not in anon_unmatched.headers
     anon_again = _ratelimit(c.get("/github/nonexistent-route-zz"))
     assert int(anon_again["used"]) == int(_ratelimit(anon_unmatched)["used"]) + 1
-    # see `_some_github_route_matches` for the unparseable-credential measurement
+    # see `_some_github_route_matches` for the measurement of a header real reads as no credential
     basic = c.get("/github/nonexistent-route-zz", headers={"Authorization": "Basic Zm9vOmJhcg=="})
     assert basic.status_code == 404
     assert not any(n.startswith("x-ratelimit-") for n in basic.headers)

@@ -318,11 +318,11 @@ which answers by `Accept` too. No document here declares any of it — real's ow
 `options` operation and neither does Backlot's — so the two `Allow` tables in
 `backlot.errors.atlassian` and the tests beside them are what hold them.
 
-The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
-(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
-parameters and operations off the two documents and never a response header; real's description
-declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
-The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them but
+the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
+operations off the two documents and never a response header; real's description declares three of
+the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
+record here (`tests/test_github.py`, the rate-limit test), not the baseline.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

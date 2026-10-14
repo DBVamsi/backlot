@@ -205,10 +205,10 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
 def _some_github_route_matches(scope: Scope) -> bool:
     """Whether some mounted route matches this scope's path, whatever the method.
 
-    A 404 for a path no route matches at all carries no version echo, and carries the five
-    `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the
-    same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling of such a
-    path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
+    A 404 for a path real does not route (see :func:`_github_routes`) carries no version echo, and
+    carries the five `x-ratelimit-*` headers only for a request that sent no `Authorization` header
+    at all — the same line `refuse_a_trailing_slash_on_github` draws for the trailing-slash spelling
+    of such a path, which real draws for every spelling. Measured against api.github.com 2026-09-21:
     `/repos/psf/requests/<unmatched>`, its trailing-slash spelling and a top-level `/<unmatched>`
     all answered 404 with no echo, where `/repos/psf/requests/issues/<missing>` — a route that DOES
     match, on a resource that does not exist — carried both for either caller. With no
@@ -216,16 +216,15 @@ def _some_github_route_matches(scope: Scope) -> bool:
     Every header value carried none of them and moved no window: a valid token (whose `used` read 0
     before three of them and 0 after), a bad bearer, `Basic Zm9vOmJhcg==` and a scheme-less value —
     so what real reads here is that a credential arrived, not that one resolved, where the same
-    unparseable `Basic` on a route that matches is served and counted.
+    `Basic` value, which names no token, on a route that matches is served and counted.
     """
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
 
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: :func:`_some_github_route_matches`, or its method and path
-    are an operation GitHub publishes and no route here serves, whose answers carry the version
-    echo and the five `x-ratelimit-*` where a served route's do (see
-    ``backlot.routers.github.refuse_an_unserved_operation``)."""
+    are an operation GitHub publishes and no route here serves
+    (``backlot.routers.github.is_an_unserved_operation``)."""
     return _some_github_route_matches(scope) or github.is_an_unserved_operation(
         scope["method"], scope["path"]
     )
@@ -248,7 +247,7 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     its refusal leaves through the version echo and the rate-limit headers as a served route's 401
     does.
     """
-    if request.url.path.startswith("/github/") and not _a_github_route_serves(request.scope):
+    if request.scope["path"].startswith("/github/") and not _a_github_route_serves(request.scope):
         try:
             await github.refuse_an_unserved_operation(request)
         except StarletteHTTPException as exc:
@@ -396,8 +395,8 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     address, ahead of and independent of routing, where a credential's window only starts once a
     route is reached (anonymous `/repos/psf/requests/` answered `used` 45, 46 then 47 across a pair
     of bad-bearer 404s that carried no headers and moved no window between them, measured
-    2026-09-17) — see `_some_github_route_matches` for the unparseable-credential and matched-route
-    cases, which draw the same line.
+    2026-09-17) — see `_some_github_route_matches` for a header real reads as no credential and
+    for a matched route, which draw the same line.
 
     `redirect_slashes` is a setting of the whole app's `Router`, shared by every vendor mounted
     here, and the vendors measured answer a trailing slash each their own way (Notion, Atlassian and

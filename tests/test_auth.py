@@ -177,6 +177,12 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic !!!!", ""),
         ("Basic ab\tcd", ""),
         ("Basic abcd ab", ""),
+        ("Basic {t}", ""),
+        # a token inside a `Basic` value, on either side of the colon
+        ("Basic b64(x:{t})", "{t}"),
+        ("Basic b64({t}:x-oauth-basic)", "{t}"),
+        ("Basic b64({t}:)", "{t}"),
+        ("Basic b64({t})", "{t}"),
         # served as no credential at all
         ("Basic abcd", None),
         ("Basic Zm9vOmJhcg==", None),
@@ -197,11 +203,18 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         (None, None),
     ],
 )
-def test_github_credential_reads_the_header_as_real_does(header, token):
-    """The rows of :func:`auth.github_credential`'s table: real refused each row with a token, and
-    served each `None` row as anonymous. The token is what the router resolves, so one that is empty
-    or holds a comma never names a caller."""
-    assert auth.github_credential(_request(header)) == token
+def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, token):
+    """The rows of :func:`auth.github_credential`'s table, `{t}` a token that resolves and
+    `b64(…)` the base64 of what it holds: real served each `{t}` row as that token's caller,
+    refused each other row with a token, and served each `None` row as anonymous. The token is
+    what the router resolves, so one that is empty or holds a comma never names a caller."""
+    t = tokens["ava@acme.com"]
+    if header is not None:
+        header = header.replace("{t}", t)
+        if header.startswith("Basic b64("):
+            header = "Basic " + base64.b64encode(header[len("Basic b64(") : -1].encode()).decode()
+    expected = token.replace("{t}", t) if token else token
+    assert auth.github_credential(_request(header, app=_app(acl))) == expected
 
 
 # --- api_key_token --------------------------------------------------------------

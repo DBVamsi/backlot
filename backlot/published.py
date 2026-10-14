@@ -2,9 +2,10 @@
 
 `backlot diff` keeps one baseline per source, the file ``backlot.fidelity.baseline_path`` names, and
 each ``missing_operation`` row in it is an operation the vendor's description publishes that
-Backlot does not serve, written ``METHOD /path`` with each path parameter as ``{}``. A router that
-answers such an operation the way the vendor answers ahead of running one reads the list from here,
-so an operation the vendor adds gets that answer once the baseline acknowledges it.
+Backlot does not serve, written ``METHOD /path`` with each path parameter as ``{}``. Notion's and
+GitHub's routers read the list from here to answer such an operation the way the vendor answers
+ahead of running one, so an operation the vendor adds gets that answer once the baseline
+acknowledges it.
 
 Read without importing ``backlot.fidelity``, whose ``__init__`` loads the comparison modules.
 """

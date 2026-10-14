@@ -169,7 +169,7 @@ def honours_api_version(request: Request) -> bool:
 
     `/rate_limit` reads it only from a request that carries an `Authorization` header: with none, a
     pinned `2026-03-10` is still `resources` AND `rate` with no echo and a pinned `1999-01-01` is a
-    200 rather than the version's 400, where a token and an unparseable `Basic` alike get
+    200 rather than the version's 400, where a token and a `Basic` value naming no token alike get
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
@@ -301,16 +301,22 @@ async def _canonical_path_repo(request: Request) -> None:
 
 
 #: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
-#: `{archive_format}` routes `zip` alone, and `POST …/releases/{}/assets` routes nothing. The
-#: spellings these leave out answered `Bearer nope` with the 404 for a path no route matches, where
-#: the rest answered "Bad credentials" (see :func:`refuse_an_unserved_operation`).
+#: `{archive_format}` routes `zip`, where `tar`, `1` and `x` were the 404, and
+#: `POST …/releases/{}/assets` routes nothing. The spellings these leave out answered `Bearer nope`
+#: with the 404 for a path no route matches, where the rest answered "Bad credentials" (see
+#: :func:`refuse_an_unserved_operation`).
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
 }
 _NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
-#: The operations GitHub publishes and no route here serves (see ``backlot.published``).
+#: The operations GitHub publishes and no route here serves (see ``backlot.published``). A row
+#: under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
+#: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad
+#: credentials" for `Bearer nope` (2026-10-14).
 _PUBLISHED_NOT_SERVED = published.operations(
-    _ROUTED_AS.get(op, op) for op in published.missing_operations("github") if op not in _NOT_ROUTED
+    _ROUTED_AS.get(op, op).replace(" /organizations/", " /orgs/", 1)
+    for op in published.missing_operations("github")
+    if op not in _NOT_ROUTED
 )
 
 
@@ -329,17 +335,19 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     `GET /user/packages` and `GET /gists/starred`. That is the other order from the served
     `/user/repos`, whose version comes first (see :func:`_validate_api_version`). Ten of the 42
     real answered without asking for a credential, 200, 404 or 422 (`GET /zen`,
-    `GET /users/{username}/repos` and `POST /markdown` among them), and the last is in
-    :data:`_NOT_ROUTED`; here no credential is :func:`_require`'s 401 on those ten too, as it is
-    on every served route but `/rate_limit`.
+    `GET /users/{username}/repos` and `POST /markdown` among them), and the remaining one,
+    `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED` keeps out; here no credential is
+    :func:`_require`'s 401 on those ten too, as it is on every served route but `/rate_limit`.
 
     Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
     `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
-    with neither and moved no window, `DELETE /installation/token` aside. Here none carries the
-    echo and the methods split as real's did; ``backlot.main`` asks
-    :func:`refused_an_unserved_operation` to answer that way.
+    with neither and moved no window, but `DELETE /installation/token`, which carried the five at
+    `used: 0`. Here none carries the echo and the methods split as real's did; ``backlot.main``
+    asks :func:`refused_an_unserved_operation` to answer that way. With a token, real's answers to
+    `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
+    405 here.
     """
-    if not is_an_unserved_operation(request.method, request.url.path):
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
     request.state.github_unserved_refusal = True
     await _validate_bad_credential(request)
@@ -349,7 +357,10 @@ async def refuse_an_unserved_operation(request: Request) -> None:
 
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
-    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`."""
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
+    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
+    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
+    on 2026-10-14."""
     return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
 
 
@@ -522,11 +533,11 @@ def refused_a_credential(request: Request) -> bool:
     `Bearer` and `token` alike are refused with none of the five `x-ratelimit-*` headers and no
     version echo, on `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window
     read `used: 13` before three of them and after — where an anonymous 401 on `/user/repos`
-    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A scheme
-    with nothing after it and a `Basic` value that does not decode carry none of the five either
-    (`/rate_limit`, 2026-10-14), where a tab between the scheme and the token is refused carrying
-    them, which this does not reproduce. A path no route matches is answered the same way for a
-    wider set of callers, see ``backlot.main._some_github_route_matches``.
+    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). `Bearer`,
+    `token` or `Basic` with nothing after it, and a `Basic` value that does not decode, carry none
+    of the five either (`/rate_limit`, 2026-10-14), where a tab between the scheme and the token is
+    refused carrying them, which this does not reproduce. A path real does not route is answered
+    the same way for a wider set of callers, see ``backlot.main._github_routes``.
     """
     token = auth.github_credential(request)
     return token is not None and auth.acl(request).resolve(token) is None
