@@ -117,10 +117,10 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
 
 How the header is read, spelling by spelling, is in
 [supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1).
-A token in the query string (`access_token=…`) with no `Authorization` beside it is read only when
-it is shaped like Google's (`ya29.…`), so a Backlot token there is no credential; send it in the
-header. `me` works as the mailbox id, in any case, resolving to whoever the token is; a user's token
-reads no other mailbox, and the admin token reads any.
+A Backlot token alone in the query string (`access_token=…`), with no `Authorization` beside it, is
+no credential, as on the real APIs; send it in the header. `me` works as the mailbox id, in any
+case, resolving to whoever the token is; a user's token reads no other mailbox, and the admin token
+reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 

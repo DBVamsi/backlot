@@ -379,13 +379,16 @@ after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 
 gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
 with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
 against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
-2026-10-14. A token in the query, `access_token`, `bearer_token` or `oauth_token`, is read where no
-header outranks it, and only when it starts `ya29.` or `1/` as Google's own do, but beside a scheme
-run into its token (`Bearer<t>`), whatever it holds. A Backlot token alone in the query is no
-credential, on the real APIs as here (`backlot.routers.google._query_credential`); a byte-stream
-read refuses any of those names, in any case, with real's 400
-`OAuth token was passed in the query parameter…`. Measured against the live Drive and Gmail APIs on
-2026-10-13.
+2026-10-14. A token in the query, under `access_token`, `bearer_token` or `oauth_token`, is read
+where no header outranks it: taken in that order, the first of those names the query carries is a
+gate whose first value has to start `ya29.` or `1/`, as Google's own tokens do, and the last carries
+the token, while beside a scheme run into its token (`Bearer<t>`) there is no gate. So behind no
+header, or one that is no credential, a Backlot token alone in the query is no credential, on the
+real APIs as here (`backlot.routers.google._query_credential`). A byte-stream read refuses any of
+those names, in any case, with real's 400 `OAuth token was passed in the query parameter…`; the
+unserved revision read with `alt=media` and an empty `access_token` is the missing credential's 401
+instead. Measured against the live Drive and Gmail APIs on 2026-10-13, and the revision read on
+2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;

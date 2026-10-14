@@ -330,15 +330,17 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
     names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
-    a token name the query repeats, names no token. A part of a batch whose own query carries none
-    of the three names reads the batch's.
+    a token whose name the query repeats, names no token. A part of a batch whose own query carries
+    none of the three names reads the batch's.
 
     Measured 2026-10-13 on Drive's `files.list` and Gmail's `profile`, each name alone, each pair in
     both orders and `access_token` beside each kind of header, with the rows
-    ``tests/test_google.py`` keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch.
-    The two prefixes are what a byte sweep over the printable ASCII found, 282 values with each
-    character after ya29 and after 1 and before a slash, and real read a JWT, an API key and a token
-    of Backlot's shape as no credential.
+    ``tests/test_google.py`` keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. On
+    2026-10-14 real answered every row of `_QUERY_CREDENTIAL_ROWS`, a quoted token beside the query
+    among them, as recorded, on Gmail's `labels.get` and Drive's `files.list`. The two prefixes are
+    what a byte sweep over the printable ASCII found, 282 values with each character after ya29 and
+    after 1 and before a slash, and real read a JWT, an API key and a token of Backlot's shape as no
+    credential.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
