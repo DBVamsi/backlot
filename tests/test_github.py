@@ -3806,6 +3806,13 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
     bob = {x["name"] for x in c.get("/github/user/repos", headers=bob_h).json()}
     assert "vault" in {x["name"] for x in body} and "vault" not in bob
     assert bob < {x["name"] for x in body}
+    # a token inside `Basic`, as the password or as the user, is that token's caller and sees what
+    # it sees (see `backlot.auth.github_credential`)
+    every = {x["name"] for x in body}
+    for token, names in ((gh_user_tokens["admin"], every), (gh_user_tokens["bob@acme.com"], bob)):
+        for pair in (f"x:{token}", f"{token}:x-oauth-basic"):
+            basic = {"Authorization": "Basic " + base64.b64encode(pair.encode()).decode()}
+            assert {x["name"] for x in c.get("/github/user/repos", headers=basic).json()} == names
 
     # ...and the repo's own routes agree with the listing. A repo every one of whose documents is
     # hidden from this caller is one they must not be able to confirm the existence of, so "does
