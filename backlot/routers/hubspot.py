@@ -576,14 +576,15 @@ def _operator(f: dict):
 def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
     """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
     1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
-    six columns and a CRLF line ending none (measured 2026-10-06). A key the body repeats resolves
-    to its last occurrence, the one `json.loads` keeps."""
+    six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
+    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
+    last occurrence, the one `json.loads` keeps."""
     encoding = json.detect_encoding(raw)
     if encoding == "utf-8-sig":
         encoding = "utf-8"
     text = raw.decode(encoding, "surrogatepass")
     decoder = json.JSONDecoder()
-    pos = _WS.match(text).end()
+    pos = _WS.match(text, 1 if text.startswith("\ufeff") else 0).end()
     for step in path:
         pos = _WS.match(text, pos + 1).end()
         if isinstance(step, int):
