@@ -143,6 +143,66 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
     assert auth.atlassian_bearer_token(_request(header)) == token
 
 
+# --- github_credential: which headers api.github.com reads as a credential -------
+
+
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        # read as a credential, refused when it does not resolve
+        ("Bearer nope", "nope"),
+        ("bearer nope", "nope"),
+        ("BEARER nope", "nope"),
+        ("token nope", "nope"),
+        ("Token nope", "nope"),
+        ("Bearer  nope", "nope"),
+        ("Bearer\tnope", "nope"),
+        ("Bearer nope extra", "nope extra"),
+        ("Bearer", ""),
+        ("bearer", ""),
+        ("token", ""),
+        ("ToKeN", ""),
+        ("Bearer,", ","),
+        ("Bearer ,", ","),
+        ("Basic", ""),
+        ("BaSiC", ""),
+        ("Basic,", ""),
+        ("Basic a", ""),
+        ("Basic abcde", ""),
+        ("Basic ====", ""),
+        ("Basic Zm9vOmJhcg", ""),
+        ("Basic -_-_", ""),
+        ("Basic a=bc", ""),
+        ("Basic abcd=", ""),
+        ("Basic !!!!", ""),
+        ("Basic ab\tcd", ""),
+        ("Basic abcd ab", ""),
+        # served as no credential at all
+        ("Basic abcd", None),
+        ("Basic Zm9vOmJhcg==", None),
+        ("Basic +/+/", None),
+        ("Basic ab==", None),
+        ("Basic ab cd", None),
+        ("Basic a b c d", None),
+        ("basic abcd", None),
+        ("Basic\tZm9v", None),
+        ("nope", None),
+        ("Digest nope", None),
+        ("OAuth", None),
+        ("Bearerx", None),
+        ("bearer:", None),
+        ("Bearer=", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_github_credential_reads_the_header_as_real_does(header, token):
+    """The rows of :func:`auth.github_credential`'s table: real refused each row with a token, and
+    served each `None` row as anonymous. The token is what the router resolves, so one that is empty
+    or holds a comma never names a caller."""
+    assert auth.github_credential(_request(header)) == token
+
+
 # --- api_key_token --------------------------------------------------------------
 
 

@@ -2250,9 +2250,9 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
     is "Requires authentication". A client telling "I forgot the token" from "my token is wrong"
     read one answer for both before this.
 
-    An `Authorization` real cannot parse is the second case, not the first: real ignores the header
-    and serves the request anonymously (`Basic …` and a scheme-less value both answer 200 on a
-    public repo), so the caller arrives with no credential rather than a rejected one.
+    Which `Authorization` values real reads as a credential is
+    :func:`backlot.auth.github_credential`'s table; one it does not is the second case, not the
+    first (see :func:`backlot.routers.github._require`).
 
     Both carry the bare `https://docs.github.com/rest`, which is what real answers on the routes a
     Backlot caller can meet a 401 on — a 404's route-specific anchor is not used here.
@@ -2266,18 +2266,26 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
         "documentation_url": "https://docs.github.com/rest",
         "status": "401",
     }
-    for unparseable in ("Basic Zm9vOmJhcg==", "just-a-value", "Bearer"):
+    for unparseable in ("Basic Zm9vOmJhcg==", "just-a-value"):
         r = c.get(url, headers={"Authorization": unparseable})
         assert r.status_code == 401 and r.json()["message"] == "Requires authentication", (
             unparseable
         )
-    bad = c.get(url, headers={"Authorization": "Bearer usr-not-a-real-token"})
-    assert bad.status_code == 401
-    assert bad.json() == {
-        "message": "Bad credentials",
-        "documentation_url": "https://docs.github.com/rest",
-        "status": "401",
-    }
+    for value in (
+        "Bearer usr-not-a-real-token",
+        "Bearer",
+        "token",
+        "Bearer,",
+        "Basic",
+        "Basic !!!!",
+    ):
+        bad = c.get(url, headers={"Authorization": value})
+        assert bad.status_code == 401
+        assert bad.json() == {
+            "message": "Bad credentials",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "401",
+        }, value
     # a bad bearer still wins over an unsupported version — see _validate_bad_credential
     bad_and_unversioned = c.get(
         url,
@@ -2592,6 +2600,52 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     r = c.post(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h)
     assert r.status_code == 405
     assert r.json() == {"detail": "Method Not Allowed"}
+
+
+#: (method, path, whether it is refused, the admin token's answer). The first six are in
+#: `backlot.routers.github._PUBLISHED_NOT_SERVED`; the last two are baseline rows that
+#: `_ROUTED_AS` and `_NOT_ROUTED` keep out of it.
+_UNSERVED_ROWS = [
+    ("PATCH", "/repos/{org}/codebase", True, 405),
+    ("DELETE", "/repos/{org}/codebase", True, 405),
+    ("POST", "/repos/{org}/codebase/forks", True, 404),
+    ("GET", "/user/packages", True, 404),
+    ("DELETE", "/user/keys/1", True, 404),
+    ("GET", "/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
+    ("GET", "/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
+    ("POST", "/repos/{org}/codebase/releases/1/assets", False, 404),
+]
+
+
+@pytest.mark.parametrize("method, path, refused, admin_status", _UNSERVED_ROWS)
+def test_github_an_unserved_operation_is_refused_for_its_credential_first(
+    gh_client, gh_admin_h, gh_org, method, path, refused, admin_status
+):
+    """Each refused row answers what :func:`backlot.routers.github.refuse_an_unserved_operation`
+    records of real: the credential's 401 with no header, with or without a version, and with
+    `Bearer nope`, then the router's own 404 or 405 for the admin token, which gets the version's
+    400 first. The other two are the 404 for any caller. Real was measured on each row with
+    `Bearer nope`, and with no header on the first five.
+    """
+    c, _ = gh_client
+    url = "/github" + path.format(org=gh_org)
+    bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+    if not refused:
+        for headers in ({}, {"Authorization": "Bearer nope"}, gh_admin_h, bad_version):
+            r = c.request(method, url, headers=headers)
+            assert (r.status_code, r.json()["message"]) == (404, "Not Found"), headers
+        return
+    for headers in ({}, bad_version):
+        r = c.request(method, url, headers=headers)
+        assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
+        assert "x-github-api-version-selected" not in r.headers
+        counted = any(name.startswith("x-ratelimit-") for name in r.headers)
+        assert counted == (method in ("GET", "POST"))
+    bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
+    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
+    assert c.request(method, url, headers=gh_admin_h).status_code == admin_status
+    unversioned = c.request(method, url, headers={**gh_admin_h, **bad_version})
+    assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
 
 
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
@@ -5661,17 +5715,19 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         # listed in real's order for a caller with no credential, which is not the token's order
         assert list(resources) == ["code_search", "core", "search"]
         assert list(status.json()["resources"]) == ["core", "search", "code_search"]
-        refused = c.get("/github/rate_limit", headers={"Authorization": "Bearer nope"})
-        assert refused.status_code == 401
-        assert refused.json() == {
-            "message": "Bad credentials",
-            "documentation_url": "https://docs.github.com/rest",
-            "status": "401",
-        }
-        # a credential that did not resolve carries none of the five, no echo, and moves no
-        # window — the address's, where it would have landed, stays put
-        assert not any(n.startswith("x-ratelimit-") for n in refused.headers)
-        assert "x-github-api-version-selected" not in refused.headers
+        # a bearer with no token is one too, not the request with no header above
+        for value in ("Bearer nope", "Bearer"):
+            refused = c.get("/github/rate_limit", headers={"Authorization": value})
+            assert refused.status_code == 401
+            assert refused.json() == {
+                "message": "Bad credentials",
+                "documentation_url": "https://docs.github.com/rest",
+                "status": "401",
+            }
+            # a credential that did not resolve carries none of the five, no echo, and moves no
+            # window — the address's, where it would have landed, stays put
+            assert not any(n.startswith("x-ratelimit-") for n in refused.headers)
+            assert "x-github-api-version-selected" not in refused.headers
         assert c.get("/github/rate_limit").json()["resources"]["core"]["used"] == 2
 
         # a search endpoint's name carries `search` past the route it serves; an empty rest and a

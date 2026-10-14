@@ -140,6 +140,14 @@ its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route th
 real's code search backend does not read the header, so a pinned version there is served whatever
 it says and no response from it carries the `Selected` header (measured 2026-09-06).
 
+**An operation GitHub publishes and Backlot does not serve is refused for its credential first**,
+as a served route is: a token that does not resolve is the 401 "Bad credentials", no
+`Authorization` header the 401 "Requires authentication", each ahead of the version's 400, and a
+token that resolves reaches the 404 or 405 of an operation Backlot cannot run. The operations are
+the GitHub baseline's `missing_operation` rows. `Authorization` is read as real reads it, so
+`Bearer` or `token` with nothing after it and a `Basic` value that is not base64 are credentials
+that do not resolve, where a `Basic` value that decodes is no credential at all.
+
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
 included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
@@ -156,9 +164,10 @@ with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
 count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
-none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
-five and count nowhere, as real's do not: a credential that does not resolve, and a path no route
-matches asked by a caller that sent one (measured 2026-09-10 and 2026-09-21).
+none of the five and counts nowhere, spent window or not (2026-09-23). Three answers carry none of
+the five and count nowhere, as real's do not: a credential that does not resolve, a path real does
+not route asked by a caller that sent one, and the 401 for no credential on the `PATCH`, `PUT` or
+`DELETE` of an operation Backlot does not serve (measured 2026-09-10, 2026-09-21 and 2026-10-14).
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

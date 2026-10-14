@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
@@ -90,16 +90,21 @@ def _require(request: Request) -> Caller:
     and at `/user`). A client that branches on which — retry versus re-authenticate — reads one
     answer for both otherwise.
 
-    Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
-    an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
-    scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
+    A header real serves as no credential is the second case, not the first: real ignores an
+    `Authorization` it does not read as one and serves the request anonymously (measured: a `Basic`
+    value that decodes and a scheme-less value both answer 200 on a public repo; which values those
+    are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an auth-required
     route with no credential rather than with a rejected one. Backlot serves no document
     anonymously, which is why that lands here as the missing-credential 401 rather than as a public
     read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
     """
-    if auth.bearer_token(request) is None:
+    token = auth.github_credential(request)
+    if token is None:
         raise HTTPException(status_code=401, detail="Requires authentication")
-    return auth.require_bearer(request, "Bad credentials")
+    caller = auth.acl(request).resolve(token)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Bad credentials")
+    return caller
 
 
 async def _validate_bad_credential(request: Request) -> None:
@@ -115,8 +120,8 @@ async def _validate_bad_credential(request: Request) -> None:
     :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
     version check.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
+    if refused_a_credential(request):
+        raise HTTPException(status_code=401, detail="Bad credentials")
 
 
 def _org(request: Request) -> str:
@@ -295,6 +300,63 @@ async def _canonical_path_repo(request: Request) -> None:
         request.path_params["repo"] = spelled
 
 
+#: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
+#: `{archive_format}` routes `zip` alone, and `POST …/releases/{}/assets` routes nothing. Each
+#: answered `Bearer nope` with the 404 for a path no route matches, where every other operation
+#: the baseline lists answered "Bad credentials" (see :func:`refuse_an_unserved_operation`).
+_ROUTED_AS = {
+    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
+}
+_NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
+#: The operations GitHub publishes and no route here serves (see ``backlot.published``).
+_PUBLISHED_NOT_SERVED = published.operations(
+    _ROUTED_AS.get(op, op) for op in published.missing_operations("github") if op not in _NOT_ROUTED
+)
+
+
+async def refuse_an_unserved_operation(request: Request) -> None:
+    """Raise what real answers ahead of an operation it publishes and no route here serves, for a
+    request whose method and path are one: a credential that does not resolve, then no credential
+    at all, then a version real does not have. A request none of those refuse goes on to the
+    router's own 404 or 405, an operation Backlot cannot run.
+
+    Measured against api.github.com on 2026-10-14, one cache-busted request each. With
+    `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
+    spellings :data:`_NOT_ROUTED` and :data:`_ROUTED_AS` leave out, with each `{}` past the owner
+    and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
+    of 42 answered "Requires authentication", and the version's 400 never came first:
+    `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`, `GET /user/packages` and
+    `GET /gists/starred` pinned to `1999-01-01` were each the 401. That is the other order from the
+    served `/user/repos`, whose version comes first (see :func:`_validate_api_version`). Ten of the
+    42 real answered without asking for a credential, 200, 404 or 422 (`GET /zen`,
+    `GET /users/{username}/repos` and `POST /markdown` among them), and the last is in
+    :data:`_NOT_ROUTED`; here no credential is :func:`_require`'s 401 on those ten too, as it is
+    on every served route.
+
+    That 401 carries no version echo, and only a `GET` or a `POST` carries the five `x-ratelimit-*`
+    and counts: `PATCH`, `PUT` and `DELETE` were refused with neither and moved no window, but for
+    `DELETE /installation/token`, which carried both. ``backlot.main`` asks
+    :func:`refused_an_unserved_operation` to answer that way.
+    """
+    if not is_an_unserved_operation(request.method, request.url.path):
+        return
+    request.state.github_unserved_refusal = True
+    await _validate_bad_credential(request)
+    _require(request)
+    request.state.github_unserved_refusal = False
+    await _validate_api_version(request)
+
+
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
+
+
+def refused_an_unserved_operation(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request's credential."""
+    return getattr(request.state, "github_unserved_refusal", False)
+
+
 # --- rate limits ----------------------------------------------------------------
 #
 # Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
@@ -433,20 +495,19 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured).
 
-    An `Authorization` real cannot parse is served rather than refused, and counted apart from the
-    bare-anonymous requests from the same address, in ONE window shared by every such value: on
-    `/repos/psf/requests`, alternating `Basic`, `Digest` and scheme-less values real had not seen
-    before ran one counter 10 through 15 at one `reset`, while the bare anonymous calls interleaved
-    with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
-    2026-09-21).
+    An `Authorization` real reads as no credential (see :func:`backlot.auth.github_credential`) is
+    served rather than refused, and counted apart from the bare-anonymous requests from the same
+    address, in ONE window shared by every such value: on `/repos/psf/requests`, alternating
+    `Basic`, `Digest` and scheme-less values real had not seen before ran one counter 10 through 15
+    at one `reset`, while the bare anonymous calls interleaved with them read 23, 24, 25 at another,
+    both at `limit: 60` (measured against api.github.com 2026-09-21).
 
     A bearer that does not resolve is keyed with the address here but never counted — see
     :func:`refused_a_credential`. Callers that draw real's line themselves check `request.headers`
-    for the
-    presence of `Authorization` directly instead of asking `auth.bearer_token`, which is `None` for
-    a scheme it does not parse — see `refuse_a_trailing_slash_on_github`."""
-    token = auth.bearer_token(request)
-    if token is not None and auth.resolve_bearer(request) is not None:
+    for the presence of `Authorization` directly instead of asking `auth.github_credential`, which
+    is `None` for a header real serves as anonymous — see `refuse_a_trailing_slash_on_github`."""
+    token = auth.github_credential(request)
+    if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
     if token is None and "authorization" in request.headers:
@@ -460,11 +521,14 @@ def refused_a_credential(request: Request) -> bool:
     `Bearer` and `token` alike are refused with none of the five `x-ratelimit-*` headers and no
     version echo, on `/repos/psf/requests` and on `/rate_limit`, and the address's `core` window
     read `used: 13` before three of them and after — where an anonymous 401 on `/user/repos`
-    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A path no
-    route matches is answered the same way for a wider set of callers, see
-    ``backlot.main._some_github_route_matches``.
+    carries all five, counts, and echoes (measured against api.github.com 2026-09-21). A scheme
+    with nothing after it and a `Basic` value that does not decode carry none of the five either
+    (`/rate_limit`, 2026-10-14), where a tab between the scheme and the token is refused carrying
+    them, which this does not reproduce. A path no route matches is answered the same way for a
+    wider set of callers, see ``backlot.main._some_github_route_matches``.
     """
-    return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
+    token = auth.github_credential(request)
+    return token is not None and auth.acl(request).resolve(token) is None
 
 
 def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
@@ -528,7 +592,7 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
             f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
             "requests get a higher rate limit. Check out the documentation for more details.)"
         )
-    caller = auth.resolve_bearer(request)
+    caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
     return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
 

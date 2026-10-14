@@ -221,6 +221,41 @@ def _some_github_route_matches(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
 
+def _github_routes(scope: Scope) -> bool:
+    """Whether real routes this scope: :func:`_some_github_route_matches`, or its method and path
+    are an operation GitHub publishes and no route here serves, whose answers carry the version
+    echo and the five `x-ratelimit-*` where a served route's do (see
+    ``backlot.routers.github.refuse_an_unserved_operation``)."""
+    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
+        scope["method"], scope["path"]
+    )
+
+
+def _a_github_route_serves(scope: Scope) -> bool:
+    """Whether a GitHub route serves this scope's method and path. Asked of
+    ``backlot.routers.github.router``, which holds the GitHub routes and nothing else."""
+    return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
+
+
+@app.middleware("http")
+async def refuse_an_unserved_github_operation(request: Request, call_next):
+    """An operation GitHub publishes that no route here serves under the request's method is
+    refused as a served route refuses before it runs, ahead of the router's 404 or 405
+    (``backlot.routers.github.refuse_an_unserved_operation``).
+
+    Registered before the other GitHub middlewares, which makes it the innermost of them: it reads
+    the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten to, and
+    its refusal leaves through the version echo and the rate-limit headers as a served route's 401
+    does.
+    """
+    if request.url.path.startswith("/github/") and not _a_github_route_serves(request.scope):
+        try:
+            await github.refuse_an_unserved_operation(request)
+        except StarletteHTTPException as exc:
+            return await _http_exception_handler(request, exc)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, on the `/github` answers real echoes one for,
@@ -235,16 +270,18 @@ async def echo_github_api_version(request: Request, call_next):
     ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
     echo either, whatever it pinned: real's code search backend does not read the header, and
     neither does `/rate_limit` asked with no `Authorization` header (see
-    ``github.honours_api_version``). Nor does a 404 for a path no route matches at all, whatever
-    the caller's credential — see ``_some_github_route_matches`` — nor real's "Bad credentials"
-    401 (``github.refused_a_credential``).
+    ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
+    caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
+    (``github.refused_a_credential``), nor the 401 an operation no route here serves gets for its
+    credential (``github.refused_an_unserved_operation``).
     """
     response = await call_next(request)
     if (
         request.url.path.startswith("/github")
         and github.honours_api_version(request)
-        and _some_github_route_matches(request.scope)
+        and _github_routes(request.scope)
         and not github.refused_a_credential(request)
+        and not github.refused_an_unserved_operation(request)
     ):
         version = github.selected_api_version(request)
         if version is not None:
@@ -273,6 +310,11 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     return response
 
 
+# The methods whose refusal of an unserved operation real answers with no `x-ratelimit-*` and counts
+# against no window (see ``backlot.routers.github.refuse_an_unserved_operation``).
+_UNCOUNTED_REFUSALS = frozenset({"PATCH", "PUT", "DELETE"})
+
+
 @app.middleware("http")
 async def report_github_rate_limit(request: Request, call_next):
     """Refuse a `/github` request whose window is already spent, real's 403 (see
@@ -286,23 +328,26 @@ async def report_github_rate_limit(request: Request, call_next):
     so a `HEAD` runs through here as the GET it is rewritten to and counts once, as it does on real
     (`remaining` 46 → 45 across one `HEAD`, measured 2026-09-09), and the head copies the five
     with the rest of the GET's headers. A path outside `/github` gets nothing: the other vendors'
-    rate-limit answers are not measured. A 404 for a path no route matches at all gets them only
-    for a request that carried no `Authorization` header at all — see
-    ``_some_github_route_matches`` — and a credential that did not resolve gets them on no path at
-    all (``github.refused_a_credential``); the refusal check shares that same gate, so neither is
-    ever refused by it.
+    rate-limit answers are not measured. A 404 for a path real does not route gets them only for a
+    request that carried no `Authorization` header at all — see ``_github_routes`` — and a
+    credential that did not resolve gets them on no path at all (``github.refused_a_credential``);
+    the refusal check shares that same gate, so neither is ever refused by it. Of the 401s an
+    operation no route here serves gets for its credential, one whose method is in
+    ``_UNCOUNTED_REFUSALS`` gets none either and counts nothing.
     """
     gated = (
         request.url.path.startswith("/github")
         and not github.refused_a_credential(request)
-        and (_some_github_route_matches(request.scope) or "authorization" not in request.headers)
+        and (_github_routes(request.scope) or "authorization" not in request.headers)
     )
     if gated:
         refusal = github.rate_limit_refusal(request)
         if refusal is not None:
             return refusal
     response = await call_next(request)
-    if gated:
+    if gated and not (
+        github.refused_an_unserved_operation(request) and request.method in _UNCOUNTED_REFUSALS
+    ):
         for name, value in github.rate_limit_headers(request, response.status_code).items():
             response.headers[name] = value
     return response

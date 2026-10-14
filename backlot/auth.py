@@ -45,6 +45,50 @@ def bearer_token(request: Request) -> str | None:
     return None
 
 
+# An `Authorization` value as api.github.com splits it: the scheme, then everything after it.
+_GITHUB_SCHEME = re.compile(r"([^ \t,]*)(.*)", re.DOTALL)
+
+
+def github_credential(request: Request) -> str | None:
+    """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
+    ``None`` for a request it serves as anonymous, and otherwise the token to resolve, which is
+    ``""`` for a credential it refuses with no token to look up.
+
+    Measured on `GET /rate_limit` on 2026-10-14, each value on a URL of its own, where an anonymous
+    caller is served 200 and a credential that does not resolve is the 401 "Bad credentials"::
+
+        Bearer or token, in any case, alone or followed by a space,      401
+          a tab or a comma and then anything
+        Basic, in any case, alone, followed by a comma, or followed       401
+          by a value that is not base64 once its spaces are dropped:
+          a, abcde, ====, Zm9vOmJhcg, -_-_, a=bc, abcd=, !!!!, ab<TAB>cd
+        Basic followed by base64: abcd, Zm9vOmJhcg==, +/+/, ab==,         200
+          ab cd, a b c d
+        any other first word, or none: nope, Digest, OAuth, Bear,         200
+          Bearerx, bearer:, Bearer=
+
+    And with a token that resolves: ``Bearer <t>``, ``bearer <t>``, ``token <t>``, a second space
+    or a tab before it are its 200; ``Bearer,<t>``, ``Bearer ,<t>``, ``Bearer <t> x``,
+    ``Bearer <t>,`` and ``Basic <t>`` are the 401; ``<t>`` alone is served as anonymous.
+
+    So real splits the scheme off at the first space, tab or comma, and serves a `Basic` value
+    that decodes as no credential at all, as it does an unknown scheme. :func:`bearer_token`
+    reads a scheme with nothing after it, a comma after one and every `Basic` value as no header.
+    """
+    scheme, rest = _GITHUB_SCHEME.fullmatch((_authorization(request) or "").strip()).groups()
+    scheme = scheme.lower()
+    if scheme in ("bearer", "token"):
+        return rest.strip()
+    if scheme == "basic":
+        value = rest.lstrip(" \t").replace(" ", "")
+        try:
+            base64.b64decode(value, validate=True)
+        except ValueError:
+            return ""
+        return None if value else ""
+    return None
+
+
 def api_key_token(request: Request) -> str | None:
     """Parse ``Authorization: <key>`` — with or without a ``Bearer`` prefix.
 
