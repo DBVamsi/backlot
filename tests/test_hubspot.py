@@ -1168,6 +1168,8 @@ _TOKEN_ROWS = [
     # the position, counted as `_token_at` counts one
     _nt("lf", "search", '{\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
     _nt("crlf", "search", '{\r\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("lone-cr", "search", '{\r"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("double-cr", "search", '{\r\r"limit":NaN}', _token_refusal(12, "NaN", line=3)),
     _nt("tab", "search", '{\t"limit":NaN}', _token_refusal(14, "NaN")),
     _nt("two-byte-char-before", "search", '{"query":"é","limit":NaN}', _token_refusal(26, "NaN")),
     _nt("three-and-four-byte-chars-before", "search", '{"query":"' + chr(0x20AC) + chr(0x1F600) + '","limit":NaN}', _token_refusal(31, "NaN")),
@@ -1178,6 +1180,8 @@ _TOKEN_ROWS = [
     _nt("utf-16", "search", '{"limit":NaN}'.encode("utf-16-be"), _token_refusal(13, "NaN")),
     _nt("a-byte-that-does-not-decode-behind", "search", b'{"limit":NaN,"query":"\xff"}', _token_refusal(13, "NaN")),
     _nt("a-byte-order-mark-and-a-byte-that-does-not-decode", "batch/read", b'\xef\xbb\xbf{\n"inputs":[NaN,"\xff"]}', _token_refusal(14, "NaN", line=2)),
+    # a bare BOM shifts the column by its three bytes (measured 2026-10-14)
+    _nt("bare-bom", "search", b'\xef\xbb\xbf{"limit":NaN}', _token_refusal(16, "NaN")),
     # the token and a value real refuses for its type: whichever starts first is named
     _nt("inputs-ahead", "batch/read", '{"inputs":"x","properties":NaN}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
     _nt("inputs-behind", "batch/read", '{"properties":NaN,"inputs":"x"}', _token_refusal(18, "NaN")),
