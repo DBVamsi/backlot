@@ -182,6 +182,7 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic Zm9vOmJhcg==", None),
         ("Basic +/+/", None),
         ("Basic ab==", None),
+        ("Basic abc=", None),
         ("Basic ab cd", None),
         ("Basic a b c d", None),
         ("basic abcd", None),
