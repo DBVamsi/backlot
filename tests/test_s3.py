@@ -2295,8 +2295,8 @@ _OBJECT_ORDER_ROWS = [
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
     # Unsigned and Signature Version 2 annotation requests, after the refusals before them and ahead
     # of a `versionId` with a value, a continuation token and the bucket; a credential refused for
-    # its shape is that refusal, and another operation is not refused for being unsigned or V2
-    # (``backlot.routers.s3._sigv4_only_refusal``).
+    # its shape is that refusal, and another operation, a valued `?annotation=x` among them, is not
+    # refused for being unsigned or V2 (``backlot.routers.s3._sigv4_only_refusal``).
     ("unsigned", "annotation", {}, *_SIGV4_ONLY),
     ("unsigned", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
     ("unsigned", "annotation&annotationName=", {}, *_SIGV4_ONLY),
@@ -2324,6 +2324,7 @@ _OBJECT_ORDER_ROWS = [
     ("unsigned", "annotation&AWSAccessKeyId=x&Signature=y", {},
      403, "AccessDenied", "Query-string authentication requires the Signature, Expires"),
     ("unsigned-absent", "acl", {}, *_BUCKET_ABSENT),
+    ("unsigned-absent", "annotation=x", {}, *_BUCKET_ABSENT),
     ("sigv2-tampered", "acl", {}, *_SIGNATURE_MISMATCH),
 ]
 # fmt: on
