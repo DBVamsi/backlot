@@ -371,12 +371,12 @@ a bare `Bearer` are no credential at all. With none, a request is answered by it
 than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
 and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
 and on a download the missing API key's 403 with no `Authorization` header, the download server's
-401 with one that is no credential. Each of those 401s carries
+401 with one that is no credential. Each of the front end's 401s carries
 `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
-token that does not resolve. An operation the two Google baselines acknowledge as
-`missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a caller whose
-credential resolves gets the 404 or 405 its path gets. Measured against the live Drive, Gmail,
-Sheets, Docs and Slides APIs on 2026-10-11.
+token that does not resolve, and the download server's names the realm without its trailing slash.
+An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
+after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
+gets. Measured against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
