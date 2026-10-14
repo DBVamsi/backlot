@@ -2118,11 +2118,12 @@ _FOO_REFUSED = _not_overridable("response-foo", "x")
 _SIGV4_ONLY = (400, "InvalidRequest", "Please use Signature Version 4.")
 
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
-# (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
-# bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
-# (`missing`), two refusals at once among them; the query, the headers, and the status, code and
-# message fragment. The first column's other values are credentials ``_unsigned_or_v2`` sends, each
-# to the object but `unsigned-absent`, which goes where `absent` does.
+# (us-east-1, each rule's date in its docstring): at a key in a bucket that does not exist
+# (`absent`), at the object over a bad secret (`tampered`), at the object signed (`present`) and at
+# a key the bucket does not hold (`missing`), two refusals at once among them; the query, the
+# headers, and the status, code and message fragment. The first column's other values are
+# credentials ``_unsigned_or_v2`` sends, each to the object but `unsigned-absent`, which goes where
+# `absent` does.
 # fmt: off
 _OBJECT_ORDER_ROWS = [
     ("absent", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2332,14 +2333,11 @@ def _unsigned_or_v2(base_url, path, token, where):
     """``(url, headers)`` for a request sent unsigned (`unsigned`, `unsigned-absent`), with an
     empty `Authorization` (`empty`), with Signature Version 2 in the header over the string real
     signs (`sigv2`), over a bad secret (`sigv2-tampered`), with an access key no token holds
-    (`sigv2-unknown-key`) or dated two hours back (`sigv2-skewed`), with botocore's V2 query signer
-    (`sigv2-query`), or with a header refused for its shape (`bearer`, `no-space`)."""
+    (`sigv2-unknown-key`) or dated two hours back (`sigv2-skewed`), in the query over the string
+    real signs (`sigv2-query`), or with a header refused for its shape (`bearer`, `no-space`)."""
     import time
     from email.utils import formatdate
-
-    from botocore.auth import HmacV1QueryAuth
-    from botocore.awsrequest import AWSRequest
-    from botocore.credentials import Credentials
+    from urllib.parse import quote
 
     url = f"{base_url}{path}"
     fixed = {
@@ -2352,12 +2350,15 @@ def _unsigned_or_v2(base_url, path, token, where):
     if where.startswith("unsigned"):
         return url, {}
     key, secret = synth.s3_access_key_id(token), synth.s3_secret_access_key(token)
-    if where == "sigv2-query":
-        req = AWSRequest(method="GET", url=url)
-        HmacV1QueryAuth(Credentials(key, secret), expires=600).add_auth(req)
-        return req.url, {}
-    date = formatdate(time.time() - (7200 if where == "sigv2-skewed" else 0), usegmt=True)
     raw_path, _, query = path.partition("?")
+    if where == "sigv2-query":
+        expires = str(int(time.time()) + 600)
+        signature = sigv2.sign(secret, sigv2.string_to_sign("GET", {}, expires, raw_path, query))
+        return (
+            f"{url}&AWSAccessKeyId={key}&Expires={expires}&Signature={quote(signature, safe='')}",
+            {},
+        )
+    date = formatdate(time.time() - (7200 if where == "sigv2-skewed" else 0), usegmt=True)
     signing = "x" * 40 if where == "sigv2-tampered" else secret
     key = _UNKNOWN if where == "sigv2-unknown-key" else key
     signature = sigv2.sign(
@@ -2377,9 +2378,10 @@ def _unsigned_or_v2(base_url, path, token, where):
 def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     live_server, where, query, headers, status, code, fragment
 ):
-    """The parses before the bucket and the credential, the version and the header checks after
-    them and before the key, and the rest after the key, as in the table above, none of them
-    carrying the encryption header an object's own answer does."""
+    """The parses before the bucket and the credential, an annotation operation's refusal of an
+    unsigned or V2 credential after them, the version and the header checks after those and before
+    the key, and the rest after the key, as in the table above, none of them carrying the encryption
+    header an object's own answer does."""
     import httpx
 
     base_url, settings = live_server
@@ -3350,8 +3352,7 @@ _HEAD_ROWS = [
     ("/s3/eng-artifacts?location&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc", "admin", {}, 405, None),
-    # An annotation operation unsigned, ahead of the bucket and of the selector's 405, which a SigV4
-    # HEAD still gets with a bad `max-annotation-results`
+    # An annotation operation unsigned, ahead of the bucket and of the 405 a SigV4 HEAD gets
     # (``backlot.routers.s3._sigv4_only_refusal``).
     (f"{OBJECT_PATH}?annotation", None, {}, 400, None),
     ("/s3/no-such-bucket/a.txt?annotation", None, {}, 400, None),

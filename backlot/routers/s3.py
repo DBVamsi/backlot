@@ -9,8 +9,10 @@ request is the anonymous caller's, who sees no bucket (``_auth``). A method this
 serve, and a GET or a HEAD naming a selector it cannot take, is refused before the bucket and
 whether or not a credential is sent, as real refuses them, but after a signature that was sent and
 does not verify (``_method_refusal``, ``_read_refusal``); a write resolves the credential and the
-bucket first. Responses are S3 XML (namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw
-object bytes; errors use the S3 ``<Error>`` envelope.
+bucket first. The annotation operations refuse an unsigned or Signature Version 2 request ahead of
+the bucket and of a HEAD's selector refusal (``_sigv4_only_refusal``). Responses are S3 XML
+(namespace ``http://s3.amazonaws.com/doc/2006-03-01/``) or raw object bytes; errors use the S3
+``<Error>`` envelope.
 
 S3 dispatches on the query string: ``?acl``, ``?versioning``, ``?tagging`` and the rest each select
 a different operation at the same path. Every one of a bucket's is answered, as real answers a
@@ -734,10 +736,11 @@ def _signature_refusal(request: Request) -> auth.SigV4Refusal | None:
     ``None`` as well when no credential is sent: that is an anonymous caller's request, on real and
     here (``backlot.auth.resolve_sigv4``), and real gives it the method and selector refusals a
     signed request gets, where a signature that fails and an access key AWS does not know are each
-    refused first. Measured 2026-09-29 against `s3.us-east-1.amazonaws.com`: twelve selector
-    refusals across a GET and a HEAD at a bucket and at a key, each sent signed, unsigned, signed
-    over a bad secret and with an unknown key, and ten method refusals at a bucket, a key and the
-    service root, which the bad secret and the unknown key each turned into their 403.
+    refused first; an object's `?annotation` is the exception (``_sigv4_only_refusal``). Measured
+    2026-09-29 against `s3.us-east-1.amazonaws.com`: twelve selector refusals across a GET and a
+    HEAD at a bucket and at a key, each sent signed, unsigned, signed over a bad secret and with an
+    unknown key, and ten method refusals at a bucket, a key and the service root, which the bad
+    secret and the unknown key each turned into their 403.
     """
     return auth.resolve_sigv4(request)[1]
 
@@ -2240,9 +2243,9 @@ def _sigv4_only_refusal(request: Request) -> Response | None:
     (us-east-1, 2026-10-13 and 2026-10-14). A V2 credential real refuses for its own shape is
     refused as that instead, which is everything ``backlot.auth.resolve_sigv4`` checks before
     ``backlot.auth._verify_v2`` reads the key: `Authorization: AWS` with no space, `AWS garbage`, a
-    query `Signature` without `Expires`, an expired one, no date, a skewed one and a V2 header
-    beside a presigned query were each that refusal on real, as was `Bearer x`, which is neither
-    unsigned nor V2."""
+    query `Signature` without `Expires` or past it, a V2 header with no date or a skewed one, and a
+    V2 header beside a presigned query were each that refusal on real, as was `Bearer x`, which is
+    neither unsigned nor V2."""
     caller, refusal = auth.resolve_sigv4(request)
     v2 = auth.signed_with_v2(request)
     if refusal is None:
