@@ -2115,12 +2115,14 @@ def _not_overridable(name, value):
 
 
 _FOO_REFUSED = _not_overridable("response-foo", "x")
+_SIGV4_ONLY = (400, "InvalidRequest", "Please use Signature Version 4.")
 
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
 # (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
 # bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
 # (`missing`), two refusals at once among them; the query, the headers, and the status, code and
-# message fragment.
+# message fragment. The other places a request comes from are ``_unsigned_or_v2``'s, at the object
+# but for `unsigned-absent`.
 # fmt: off
 _OBJECT_ORDER_ROWS = [
     ("absent", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2277,6 +2279,8 @@ _OBJECT_ORDER_ROWS = [
     ("present", "response-foo=x&partNumber=abc", {}, *_FOO_REFUSED),
     ("present", "response-foo=x", {"If-Match": '"0000"'}, *_FOO_REFUSED),
     ("present", "response-foo=x", {"Range": "bytes=999-"}, *_FOO_REFUSED),
+    ("present", "response-foo=%ED%95%9C", {}, *_not_overridable("response-foo", "\ud55c")),
+    ("present", "response-foo=a%22b", {}, *_not_overridable("response-foo", 'a"b')),
     ("present", "response-foo=x&response-content-type=a%22b", {}, *_OPEN_QUOTE),
     ("present", "response-aaa=x&response-content-type=a%22b", {}, *_not_overridable("response-aaa", "x")),
     ("present", "response-content-language=%ED%95%9C&response-content-type=a%22b", {}, *_OPEN_QUOTE),
@@ -2288,8 +2292,76 @@ _OBJECT_ORDER_ROWS = [
     ("present", "attributes&versionId=", _attributes("garbage"), *_BAD_ATTRIBUTE),
     ("present", "uploadId=u&max-parts=abc&versionId=x", {},
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
+    # An annotation operation sent unsigned or with Signature Version 2, after the refusals before
+    # it and ahead of a `versionId` with a value, a continuation token and the bucket; a credential
+    # refused for its shape is that refusal, and another operation is not refused for its credential
+    # (``backlot.routers.s3._sigv4_only_refusal``).
+    ("unsigned", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&annotationName=", {}, *_SIGV4_ONLY),
+    ("unsigned-absent", "annotation", {}, *_SIGV4_ONLY),
+    ("empty", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&X-Amz-Signature=00", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&AWSAccessKeyId=x", {}, *_SIGV4_ONLY),
+    ("sigv2", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
+    ("sigv2-tampered", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2-query", "annotation", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&max-annotation-results=abc", {}, *_ANNOTATION_COUNT_PARSE),
+    ("sigv2", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
+    ("unsigned", "annotation&response-foo=x", {}, *_FOO_REFUSED),
+    ("sigv2", "annotation&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("unsigned", "annotation&versionId=", {}, *_VERSION_ID_EMPTY),
+    ("unsigned", "annotation&acl", {},
+     400, "InvalidArgument", "Conflicting query string parameters: acl, annotation"),
+    ("unsigned", "annotation&versionId=x", {}, *_SIGV4_ONLY),
+    ("unsigned", "annotation&continuation-token=garbage", {}, *_SIGV4_ONLY),
+    ("bearer", "annotation", {}, 400, "InvalidArgument", "Unsupported Authorization Type"),
+    ("no-space", "annotation", {}, 400, "InvalidArgument", "one and only one ' ' (space) required"),
+    ("sigv2-skewed", "annotation", {}, 403, "RequestTimeTooSkewed", "is too large"),
+    ("unsigned", "annotation&AWSAccessKeyId=x&Signature=y", {},
+     403, "AccessDenied", "Query-string authentication requires the Signature, Expires"),
+    ("unsigned", "acl", {}, *_BUCKET_ABSENT),
+    ("sigv2-tampered", "acl", {}, *_SIGNATURE_MISMATCH),
 ]
 # fmt: on
+
+
+def _unsigned_or_v2(base_url, path, token, where):
+    """``(url, headers)`` for a request sent unsigned (`unsigned`, `unsigned-absent`), with an
+    empty `Authorization` (`empty`), with Signature Version 2 in the header over the string real
+    signs (`sigv2`), over a bad secret (`sigv2-tampered`) or dated two hours back (`sigv2-skewed`),
+    with botocore's V2 query signer (`sigv2-query`), or with a header refused for its shape
+    (`bearer`, `no-space`)."""
+    import time
+    from email.utils import formatdate
+
+    from botocore.auth import HmacV1QueryAuth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    url = f"{base_url}{path}"
+    fixed = {
+        "empty": {"Authorization": ""},
+        "bearer": {"Authorization": "Bearer x"},
+        "no-space": {"Authorization": "AWS"},
+    }
+    if where in fixed:
+        return url, fixed[where]
+    if where.startswith("unsigned"):
+        return url, {}
+    key, secret = synth.s3_access_key_id(token), synth.s3_secret_access_key(token)
+    if where == "sigv2-query":
+        req = AWSRequest(method="GET", url=url)
+        HmacV1QueryAuth(Credentials(key, secret), expires=600).add_auth(req)
+        return req.url, {}
+    date = formatdate(time.time() - (7200 if where == "sigv2-skewed" else 0), usegmt=True)
+    raw_path, _, query = path.partition("?")
+    signing = "x" * 40 if where == "sigv2-tampered" else secret
+    signature = sigv2.sign(
+        signing, sigv2.string_to_sign("GET", {"date": date}, date, raw_path, query)
+    )
+    return url, {"date": date, "authorization": f"AWS {key}:{signature}"}
 
 
 @pytest.mark.parametrize(
@@ -2311,11 +2383,15 @@ def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     base_url, settings = live_server
     path = {
         "absent": "/s3/no-such-bucket/k.txt",
+        "unsigned-absent": "/s3/no-such-bucket/k.txt",
         "missing": "/s3/eng-artifacts/no/such.md",
     }.get(where, OBJECT_PATH) + (f"?{query}" if query else "")
-    url, signed = _sign_get(
-        base_url, path, settings.admin_token, tamper=where == "tampered", extra_headers=headers
-    )
+    if where in ("absent", "missing", "present", "tampered"):
+        url, signed = _sign_get(
+            base_url, path, settings.admin_token, tamper=where == "tampered", extra_headers=headers
+        )
+    else:
+        url, signed = _unsigned_or_v2(base_url, path, settings.admin_token, where)
     r = httpx.get(url, headers=signed)
     assert r.status_code == status
     assert f"<Code>{code}</Code>" in r.text and fragment in r.text
@@ -3272,6 +3348,13 @@ _HEAD_ROWS = [
     ("/s3/eng-artifacts?location&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc&response-content-type=a%22b", "admin", {}, 400, None),
     (f"{OBJECT_PATH}?uploadId=u&max-parts=abc", "admin", {}, 405, None),
+    # An annotation operation unsigned, ahead of the bucket and of the selector's 405, which a SigV4
+    # HEAD still gets with a bad `max-annotation-results`
+    # (``backlot.routers.s3._sigv4_only_refusal``).
+    (f"{OBJECT_PATH}?annotation", None, {}, 400, None),
+    ("/s3/no-such-bucket/a.txt?annotation", None, {}, 400, None),
+    (f"{OBJECT_PATH}?annotation&max-annotation-results=abc", None, {}, 400, None),
+    (f"{OBJECT_PATH}?annotation", "admin", {}, 405, None),
 ]
 # fmt: on
 

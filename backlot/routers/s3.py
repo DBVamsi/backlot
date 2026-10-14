@@ -2178,9 +2178,10 @@ def _object_parse(request: Request, selected: list[str], head: bool) -> Response
     parameter and a valued `website` (``_response_override_refusal``, ``_website_refusal``); then
     a `versionId`, `null` included, beside a selector whose operation takes none
     (``_KEY_VERSIONLESS``), "This operation does not accept a version-id.", and an empty
-    `versionId`, "Version id cannot be the empty string". A HEAD is refused each of the others as
-    its status alone, where `?annotation&max-annotation-results=abc` and `?uploadId=x&max-parts=abc`
-    are the selector's 405."""
+    `versionId`, "Version id cannot be the empty string"; then an annotation operation's credential
+    that is not SigV4 (``_sigv4_only_refusal``). A HEAD is refused each of the others as its status
+    alone, where `?uploadId=x&max-parts=abc` is the selector's 405, and so is
+    `?annotation&max-annotation-results=abc` signed with SigV4."""
     q = request.query_params
     if selected == ["annotationName"]:
         return _argument_error("Unexpected query string parameter", "ResourceType", selected[0])
@@ -2215,7 +2216,39 @@ def _object_parse(request: Request, selected: list[str], head: bool) -> Response
         return _argument_error(_NO_VERSION_ID, "versionId", version)
     if version == "":
         return _argument_error("Version id cannot be the empty string", "versionId", "")
+    if selected == ["annotation"]:
+        return _sigv4_only_refusal(request)
     return None
+
+
+_SIGV4_ONLY = (
+    "The authorization mechanism you have provided is not supported. "
+    "Please use Signature Version 4."
+)
+
+
+def _sigv4_only_refusal(request: Request) -> Response | None:
+    """Real's 400 for ListObjectAnnotations and GetObjectAnnotation (``?annotation``, with or
+    without an ``annotationName``) sent unsigned or signed with Signature Version 2, or ``None``.
+
+    Unsigned takes in an empty `Authorization` and a lone `X-Amz-Signature` or `AWSAccessKeyId`, and
+    Signature Version 2 is the header's or the query's. Real refused each of those at an object,
+    the unsigned request and the V2 header in a bucket that does not exist too, and a HEAD unsigned
+    or with a V2 header with its status alone; a V2 header over a key nobody holds and one whose
+    signature does not verify got the 400 as well, so real checks neither first (us-east-1,
+    2026-10-13 and 2026-10-14). A V2 credential real refuses for its own shape is refused as that
+    instead, which is everything ``backlot.auth.resolve_sigv4`` checks before
+    ``backlot.auth._verify_v2`` reads the key: `Authorization: AWS` with no space, `AWS garbage`, a
+    query `Signature` without `Expires`, an expired one, no date and a skewed one were each that
+    refusal on real, as were `Bearer x` and a header beside a presigned query, neither of them
+    unsigned or V2."""
+    caller, refusal = auth.resolve_sigv4(request)
+    v2 = auth.signed_with_v2(request)
+    if refusal is None:
+        refused = v2 or caller.is_anonymous
+    else:
+        refused = v2 and refusal.code in ("InvalidAccessKeyId", "SignatureDoesNotMatch")
+    return _error("InvalidRequest", _SIGV4_ONLY) if refused else None
 
 
 def _attribute_names(sent: str | None) -> list[str]:
