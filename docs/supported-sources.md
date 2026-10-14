@@ -376,7 +376,10 @@ and on a download the missing API key's 403 with no `Authorization` header, the 
 token that does not resolve, and the download server's names the realm without its trailing slash.
 An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
 after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
-gets. Measured against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11.
+gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
+with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
+against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
+2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
