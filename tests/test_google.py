@@ -2603,6 +2603,9 @@ _QUERY_CREDENTIAL_ROWS = [
     ("Bearer {t}", "access_token=ya29.x", _SERVED),
     ("Bearer nope", "access_token=ya29.x&oauth_token={t}", _CHALLENGED),
     ("Bearer ,", "access_token=ya29.x&oauth_token={t}", _CHALLENGE),
+    ('Bearer ""', "access_token=ya29.x&oauth_token={t}", _CHALLENGE),
+    ('Bearer "nope"', "access_token=ya29.x&oauth_token={t}", _CHALLENGED),
+    ('Bearer "{t}"', "access_token=ya29.x", _SERVED),
     ("Bearer", "access_token=ya29.x&oauth_token={t}", _NONE),
     ("Bearer{t}", "access_token={t}", _SERVED), ("OAuth2 {t}", "access_token={t}", _SERVED),
     ("Bearer{m}", "access_token={m}", _SERVED),
@@ -2737,6 +2740,7 @@ _UNSERVED_PARAMETER_ROWS = [
     ("PATCH", "/drive/v3/files/x", {"callback": "cb"}, None, 401, 401),
     ("PATCH", "/drive/v3/files/x", {"callback": "a b"}, None, 401, 401),
     ("POST", "/gmail/v1/users/me/messages/send", {"callback": "a b"}, "bad", 401, 401),
+    ("GET", "/drive/v3/files/x/revisions/y", {"alt": "media", "access_token": ""}, None, 401, 401),
 ]
 # fmt: on
 
@@ -3933,6 +3937,7 @@ _DOWNLOAD_QUERY_TOKEN_ROWS = [
     ("export", "BEARER_TOKEN=nope", None, 400, _QUERY_TOKEN),
     ("export", "access_token=nope", "Bearer {t}", 400, _QUERY_TOKEN),
     ("export", "access_token=nope", "bearer nope", 400, _QUERY_TOKEN),
+    ("export", "access_token=", "", 400, _QUERY_TOKEN),
     ("export", "access_token=nope&callback=a%20b", None, 400, _QUERY_TOKEN),
     ("export", "access_token=nope&callback=cb", None, 400, _QUERY_TOKEN),
     ("bare", "access_token=nope", None, 400, _QUERY_TOKEN),
