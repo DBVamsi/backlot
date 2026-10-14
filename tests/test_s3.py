@@ -524,6 +524,7 @@ _OPTIONS_QUERY_ROWS = [
         for path in _OPTIONS_KEY_PATHS
         for query in (
             "acl",
+            "annotation=x&acl",
             "partNumber=1",
             "partNumber=abc",
             "partNumber=1&uploadId=u",
@@ -1858,8 +1859,9 @@ _OBJECT_SUBRESOURCE_ROWS = [
     ("legal-hold", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("retention", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
     ("torrent", {}, 405, "application/xml", _TORRENT, 405, _TORRENT),
-    (
-        "annotation",
+    *[
+      (
+        query,
         {},
         200,
         None,
@@ -1868,7 +1870,9 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
-    ),
+    )
+        for query in ("annotation", "annotation=&annotation=x")
+    ],
     (
         "annotation&annotation-prefix=x&max-annotation-results=5",
         {},
@@ -2293,6 +2297,7 @@ _OBJECT_ORDER_ROWS = [
     ("present", "attributes&versionId=", _attributes("garbage"), *_BAD_ATTRIBUTE),
     ("present", "uploadId=u&max-parts=abc&versionId=x", {},
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
+    ("present", "annotation=x&versionId=bogus", {}, 400, "InvalidArgument", _BAD_VERSION),
     # Unsigned and Signature Version 2 annotation requests, after the refusals before them and ahead
     # of a `versionId` with a value, a continuation token and the bucket; a credential refused for
     # its shape is that refusal, and another operation, a valued `?annotation=x` among them, is not
@@ -2423,6 +2428,15 @@ _OBJECT_ANSWER_ROWS = [
     ("", {"x-amz-checksum-mode": "ENABLED", "Range": "bytes=0-9"}, 206, _FIRST_TEN, False),
     ("", {"x-amz-content-sha256": "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"}, 200, None, False),
     ("", {"x-amz-content-sha256": "0" * 64}, 200, None, False),
+    # A valued `annotation` is GetObject's, whatever is beside it
+    # (``backlot.routers.s3._key_selected``).
+    ("annotation=x", {}, 200, None, False),
+    ("annotation=%20", {}, 200, None, False),
+    ("annotation=x&annotation=", {}, 200, None, False),
+    ("annotation=x&annotationName=y", {}, 200, None, False),
+    ("annotation=x&max-annotation-results=abc", {}, 200, None, False),
+    ("annotation=x&versionId=null", {}, 200, None, False),
+    ("annotation=x&partNumber=1", {}, 206, _FULL_RANGE, False),
 ]
 
 
@@ -2484,6 +2498,7 @@ _RESPONSE_OVERRIDE_ROWS = [
         {"content-type": "text/csv", "cache-control": "no-cache"},
     ),
     ("response-content-type=text/csv", {"Range": "bytes=0-3"}, {"content-type": "text/csv"}),
+    ("annotation=x&response-content-type=text/csv", {}, {"content-type": "text/csv"}),
     ("Response-Content-Type=text/csv", {}, {}),
     # the first value of a repeated name
     ("response-content-type=a/b&response-content-type=c/d", {}, {"content-type": "a/b"}),
@@ -3359,6 +3374,8 @@ _HEAD_ROWS = [
     ("/s3/no-such-bucket/a.txt?annotation", None, {}, 400, None),
     (f"{OBJECT_PATH}?annotation&max-annotation-results=abc", None, {}, 400, None),
     (f"{OBJECT_PATH}?annotation", "admin", {}, 405, None),
+    (f"{OBJECT_PATH}?annotation=x", "admin", {}, 200, len(OBJECT_TEXT)),
+    (f"{OBJECT_PATH}?annotation=x&acl", "admin", {}, 405, None),
 ]
 # fmt: on
 

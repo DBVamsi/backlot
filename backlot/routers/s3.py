@@ -860,8 +860,20 @@ def _key_selected(q) -> list[str]:
     too (`?partNumber=1&tagging` is "partNumber, tagging", same date); alone it is GetObject's
     (``_part_refusal``), and beside `uploadId` UploadPart.
 
+    `annotation` is read from its first value, as ``_first`` reads it, and names the operation only
+    when that value is empty: `?annotation=x` is GetObject, whatever else is sent, so an
+    `annotationName`, a `max-annotation-results` or a second selector beside it is read as if the
+    `annotation` were absent, and a version id, a part number and a response override as GetObject
+    reads them, and `?annotation=x&annotation=` is GetObject where `?annotation=&annotation=x` is
+    the listing. No other selector reads its value: `?acl=x`, `?tagging=x`, `?attributes=x`,
+    `?torrent=x`, `?uploads=x`, `?legal-hold=x` and `?retention=x` at a key and `?acl=x`,
+    `?versioning=x` and `?location=x` at a bucket each got the selector's own answer (us-east-1,
+    2026-10-14).
+
     An `OPTIONS` at a key's path reads them the same way (``_cors_preflight``)."""
     selected = _selected(q, _OBJECT_READ_SELECTORS)
+    if "annotation" in selected and _first(q, "annotation") != "":
+        selected.remove("annotation")
     if "annotationName" in q and "annotation" not in q:
         selected = sorted([*selected, "annotationName"])
     if "partNumber" in q and selected and selected != ["uploadId"]:
@@ -2221,7 +2233,7 @@ def _object_parse(request: Request, selected: list[str], head: bool) -> Response
         return _argument_error(_NO_VERSION_ID, "versionId", version)
     if version == "":
         return _argument_error("Version id cannot be the empty string", "versionId", "")
-    if selected == ["annotation"] and _first(q, "annotation") == "":
+    if selected == ["annotation"]:
         return _sigv4_only_refusal(request)
     return None
 
@@ -2233,9 +2245,9 @@ _SIGV4_ONLY = (
 
 
 def _sigv4_only_refusal(request: Request) -> Response | None:
-    """Real's 400 for ListObjectAnnotations and GetObjectAnnotation (``?annotation`` with no value,
-    with or without an ``annotationName``; `?annotation=x` is GetObject on real, 2026-10-14) sent
-    unsigned or signed with Signature Version 2, or ``None``.
+    """Real's 400 for ListObjectAnnotations and GetObjectAnnotation (``?annotation`` as
+    ``_key_selected`` reads it, with or without an ``annotationName``) sent unsigned or signed with
+    Signature Version 2, or ``None``.
 
     Unsigned is what ``backlot.auth.resolve_sigv4`` reads as no credential, an empty `Authorization`
     and the two lone query parameters it names among them, and Signature Version 2 is the header's
