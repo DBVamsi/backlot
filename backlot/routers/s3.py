@@ -790,7 +790,7 @@ def _read_refusal(
     at a bucket and at a key, on a GET and a HEAD, and in a bucket that does not exist, with the 400
     whether each was signed, unsigned, signed over a bad secret or sent with an unknown key
     (2026-09-29). So is a bucket's `partNumber` (``_bucket_selected``). Then ``first``, what the
-    caller refuses before the credential, in the order ``head_bucket``, ``bucket_get`` and
+    caller refuses before ``_auth``, in the order ``head_bucket``, ``bucket_get`` and
     ``_object_parse`` build it, and after it one selector is refused on a HEAD whatever it is
     (``_head_refusal``) and on a GET when the GET cannot take it (``refused``, the type its 405
     names), once a signature that was sent verifies (``_signature_refusal``).
@@ -2168,19 +2168,20 @@ def _part_refusal(request: Request, part: str) -> Response | None:
 
 
 def _object_parse(request: Request, selected: list[str], head: bool) -> Response | None:
-    """What a GET at a key refuses before the credential and the bucket, in the order real refused
-    them, unsigned, over a bad secret and in a bucket nobody owns (measured 2026-09-29, 2026-09-30
-    and 2026-10-13): `annotationName` without `annotation`, "Unexpected query string parameter"
-    under `ResourceType`; an `x-amz-object-attributes` naming an attribute there is none of, read as
-    ``_attribute_names`` reads it and naming the first such name; on a GET ListObjectAnnotations'
+    """What a GET at a key refuses before the bucket, and before the credential but for its last
+    step, in the order real refused them, unsigned, over a bad secret and in a bucket nobody owns
+    (measured 2026-09-29, 2026-09-30, 2026-10-13 and 2026-10-14): `annotationName` without
+    `annotation`, "Unexpected query string parameter" under `ResourceType`; an
+    `x-amz-object-attributes` naming an attribute there is none of, read as ``_attribute_names``
+    reads it and naming the first such name; on a GET ListObjectAnnotations'
     `max-annotation-results`, parsed as `max-keys` is and then held to 1 to 1000, naming it as sent,
     and ListParts' own integers, where `max-parts=-1` is left to the upload; then a `response-`
-    parameter and a valued `website` (``_response_override_refusal``, ``_website_refusal``); then
-    a `versionId`, `null` included, beside a selector whose operation takes none
+    parameter and a valued `website` (``_response_override_refusal``, ``_website_refusal``); then a
+    `versionId`, `null` included, beside a selector whose operation takes none
     (``_KEY_VERSIONLESS``), "This operation does not accept a version-id.", and an empty
-    `versionId`, "Version id cannot be the empty string"; then an annotation operation's credential
-    that is not SigV4 (``_sigv4_only_refusal``). A HEAD is refused each of the others as its status
-    alone, where `?uploadId=x&max-parts=abc` is the selector's 405, and so is
+    `versionId`, "Version id cannot be the empty string"; then an annotation operation sent unsigned
+    or with Signature Version 2 (``_sigv4_only_refusal``). A HEAD is refused each of the others as
+    its status alone, where `?uploadId=x&max-parts=abc` is the selector's 405, and so is
     `?annotation&max-annotation-results=abc` signed with SigV4."""
     q = request.query_params
     if selected == ["annotationName"]:
@@ -2234,14 +2235,14 @@ def _sigv4_only_refusal(request: Request) -> Response | None:
     Unsigned takes in an empty `Authorization` and a lone `X-Amz-Signature` or `AWSAccessKeyId`, and
     Signature Version 2 is the header's or the query's. Real refused each of those at an object,
     the unsigned request and the V2 header in a bucket that does not exist too, and a HEAD unsigned
-    or with a V2 header with its status alone; a V2 header over a key nobody holds and one whose
-    signature does not verify got the 400 as well, so real checks neither first (us-east-1,
-    2026-10-13 and 2026-10-14). A V2 credential real refuses for its own shape is refused as that
-    instead, which is everything ``backlot.auth.resolve_sigv4`` checks before
+    or with a V2 header with its status alone; a V2 header with an access key AWS does not know and
+    one whose signature does not verify got the 400 as well, so real checks neither first
+    (us-east-1, 2026-10-13 and 2026-10-14). A V2 credential real refuses for its own shape is
+    refused as that instead, which is everything ``backlot.auth.resolve_sigv4`` checks before
     ``backlot.auth._verify_v2`` reads the key: `Authorization: AWS` with no space, `AWS garbage`, a
-    query `Signature` without `Expires`, an expired one, no date and a skewed one were each that
-    refusal on real, as were `Bearer x` and a header beside a presigned query, neither of them
-    unsigned or V2."""
+    query `Signature` without `Expires`, an expired one, no date, a skewed one and a V2 header
+    beside a presigned query were each that refusal on real, as was `Bearer x`, which is neither
+    unsigned nor V2."""
     caller, refusal = auth.resolve_sigv4(request)
     v2 = auth.signed_with_v2(request)
     if refusal is None:

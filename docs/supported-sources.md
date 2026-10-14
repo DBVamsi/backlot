@@ -587,8 +587,9 @@ conflict and the parameter refusals, as on real. Each other credential refusal i
 and message too. The annotation operations, `?annotation` at a key with or without an
 `annotationName`, are the exception to the unsigned answer and to Signature Version 2: they take
 SigV4 or SigV4a alone, and one sent unsigned or with Signature Version 2 is real's 400
-`InvalidRequest` asking for Signature Version 4, after the parameter refusals before the bucket and
-a V2 credential's own shape, and ahead of the bucket and of a V2 key or signature.
+`InvalidRequest` asking for Signature Version 4, after the conflict of two, the parameter refusals
+before the bucket and a V2 credential's own shape, and ahead of the bucket, of the 405 a signed HEAD
+gets and of a V2 key or signature.
 
 ### Slack — `/slack/api`
 

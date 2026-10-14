@@ -2121,8 +2121,8 @@ _SIGV4_ONLY = (400, "InvalidRequest", "Please use Signature Version 4.")
 # (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
 # bad secret (`tampered`), at the object signed (`present`) and at a key the bucket does not hold
 # (`missing`), two refusals at once among them; the query, the headers, and the status, code and
-# message fragment. The other places a request comes from are ``_unsigned_or_v2``'s, at the object
-# but for `unsigned-absent`.
+# message fragment. The first column's other values are credentials ``_unsigned_or_v2`` sends, each
+# to the object but `unsigned-absent`, which goes where `absent` does.
 # fmt: off
 _OBJECT_ORDER_ROWS = [
     ("absent", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2292,9 +2292,9 @@ _OBJECT_ORDER_ROWS = [
     ("present", "attributes&versionId=", _attributes("garbage"), *_BAD_ATTRIBUTE),
     ("present", "uploadId=u&max-parts=abc&versionId=x", {},
      400, "InvalidArgument", "Provided max-parts not an integer or within integer range"),
-    # An annotation operation sent unsigned or with Signature Version 2, after the refusals before
-    # it and ahead of a `versionId` with a value, a continuation token and the bucket; a credential
-    # refused for its shape is that refusal, and another operation is not refused for its credential
+    # Unsigned and Signature Version 2 annotation requests, after the refusals before them and ahead
+    # of a `versionId` with a value, a continuation token and the bucket; a credential refused for
+    # its shape is that refusal, and another operation is not refused for being unsigned or V2
     # (``backlot.routers.s3._sigv4_only_refusal``).
     ("unsigned", "annotation", {}, *_SIGV4_ONLY),
     ("unsigned", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
@@ -2306,6 +2306,7 @@ _OBJECT_ORDER_ROWS = [
     ("sigv2", "annotation", {}, *_SIGV4_ONLY),
     ("sigv2", "annotation&annotationName=x", {}, *_SIGV4_ONLY),
     ("sigv2-tampered", "annotation", {}, *_SIGV4_ONLY),
+    ("sigv2-unknown-key", "annotation", {}, *_SIGV4_ONLY),
     ("sigv2-query", "annotation", {}, *_SIGV4_ONLY),
     ("unsigned", "annotation&max-annotation-results=abc", {}, *_ANNOTATION_COUNT_PARSE),
     ("sigv2", "annotation&max-annotation-results=0", {}, *_ANNOTATION_COUNT_RANGE),
@@ -2321,7 +2322,7 @@ _OBJECT_ORDER_ROWS = [
     ("sigv2-skewed", "annotation", {}, 403, "RequestTimeTooSkewed", "is too large"),
     ("unsigned", "annotation&AWSAccessKeyId=x&Signature=y", {},
      403, "AccessDenied", "Query-string authentication requires the Signature, Expires"),
-    ("unsigned", "acl", {}, *_BUCKET_ABSENT),
+    ("unsigned-absent", "acl", {}, *_BUCKET_ABSENT),
     ("sigv2-tampered", "acl", {}, *_SIGNATURE_MISMATCH),
 ]
 # fmt: on
@@ -2330,9 +2331,9 @@ _OBJECT_ORDER_ROWS = [
 def _unsigned_or_v2(base_url, path, token, where):
     """``(url, headers)`` for a request sent unsigned (`unsigned`, `unsigned-absent`), with an
     empty `Authorization` (`empty`), with Signature Version 2 in the header over the string real
-    signs (`sigv2`), over a bad secret (`sigv2-tampered`) or dated two hours back (`sigv2-skewed`),
-    with botocore's V2 query signer (`sigv2-query`), or with a header refused for its shape
-    (`bearer`, `no-space`)."""
+    signs (`sigv2`), over a bad secret (`sigv2-tampered`), with an access key no token holds
+    (`sigv2-unknown-key`) or dated two hours back (`sigv2-skewed`), with botocore's V2 query signer
+    (`sigv2-query`), or with a header refused for its shape (`bearer`, `no-space`)."""
     import time
     from email.utils import formatdate
 
@@ -2358,6 +2359,7 @@ def _unsigned_or_v2(base_url, path, token, where):
     date = formatdate(time.time() - (7200 if where == "sigv2-skewed" else 0), usegmt=True)
     raw_path, _, query = path.partition("?")
     signing = "x" * 40 if where == "sigv2-tampered" else secret
+    key = _UNKNOWN if where == "sigv2-unknown-key" else key
     signature = sigv2.sign(
         signing, sigv2.string_to_sign("GET", {"date": date}, date, raw_path, query)
     )
