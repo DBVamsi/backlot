@@ -47,6 +47,10 @@ def bearer_token(request: Request) -> str | None:
 
 # An `Authorization` value as api.github.com splits it: the scheme, then everything after it.
 _GITHUB_SCHEME = re.compile(r"([^ \t,]*)(.*)", re.DOTALL)
+# A `Basic` value api.github.com reads as base64: four-character groups, the last of which may be
+# two characters and `==` or three and `=`. Written out rather than left to `base64.b64decode`,
+# whose `validate=True` reads `abcd=` as base64 on Python 3.11 and refuses it from 3.12 on.
+_GITHUB_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 
 
 def github_credential(request: Request) -> str | None:
@@ -81,11 +85,7 @@ def github_credential(request: Request) -> str | None:
         return rest.strip()
     if scheme == "basic":
         value = rest.lstrip(" \t").replace(" ", "")
-        try:
-            base64.b64decode(value, validate=True)
-        except ValueError:
-            return ""
-        return None if value else ""
+        return None if value and _GITHUB_BASE64.fullmatch(value) else ""
     return None
 
 
