@@ -1174,7 +1174,7 @@ def test_google_batch_redirects_a_drive_download_and_refuses_a_sheets_read(
         ]
         assert json.loads(sub_body) == _REDIRECTED
     elif status == 401:
-        assert lines == [
+        assert lines[:2] == [
             f"WWW-Authenticate: {detail}",
             "Content-Type: application/json; charset=UTF-8",
         ]
@@ -2555,10 +2555,16 @@ _CREDENTIAL_ROWS = [
     ("Bearer {t}", _SERVED), ("OAuth {t}", _SERVED), ("Bearer  {t}", _SERVED),
     ("Bearer \t{t}", _SERVED), ("Bearer {t} x", _SERVED), ("Bearer {t}\tx", _SERVED),
     ("Bearer {t},x", _SERVED), ("Bearer ,{t}", _SERVED),
+    ('Bearer "{t}"', _SERVED), ('Bearer "{t}', _SERVED), ('OAuth "{t}"', _SERVED), ('Bearer ,"{t}"', _SERVED),
+    ('Bearer "{t}" x', _SERVED), ('Bearer "{t}",x', _SERVED), ('Bearer "{t}"x', _SERVED),
+    ('Bearer ",{t},"', _SERVED), ('Bearer "\t{t}"', _SERVED), ('Bearer "{t} "', _SERVED),
     ("Bearer nope", _CHALLENGED), ("OAuth nope", _CHALLENGED), ("Bearer x {t}", _CHALLENGED), ("Bearer {t};x", _CHALLENGED),
     ('Bearer {t}"', _CHALLENGED), ("Bearer nope x", _CHALLENGED),
+    ('Bearer "nope"', _CHALLENGED), ('Bearer "{t} x"', _CHALLENGED), ('Bearer "{t},x"', _CHALLENGED),
+    ('Bearer " "', _CHALLENGED), ("Bearer '{t}'", _CHALLENGED),
     ("Bearer{t}", _CHALLENGE), ("Bearer\t{t}", _CHALLENGE), ("Bearers {t}", _CHALLENGE),
     ("Bearer ,", _CHALLENGE), ("OAuth ,", _CHALLENGE), ("OAuth2 {t}", _CHALLENGE),
+    ('Bearer ""', _CHALLENGE), ('Bearer "', _CHALLENGE), ('Bearer ""{t}', _CHALLENGE),
     ("bearer {t}", _NONE), ("BEARER {t}", _NONE), ("oauth {t}", _NONE), ("OAUTH {t}", _NONE),
     ("token {t}", _NONE), ("Token {t}", _NONE), ("MAC {t}", _NONE), ("Basic Zm9vOmJhcg==", _NONE),
     ("{t}", _NONE), ("Bearer", _NONE), ("OAuth", _NONE),
@@ -3781,8 +3787,8 @@ def _download_requests(client, admin_h):
 
 def test_a_download_names_the_missing_api_key_where_the_metadata_read_does_not(client, admin_h):
     """Measured 2026-10-04 on `files.export` and 2026-10-05 on `files.get?alt=media`: a byte-stream
-    read with no credential answers real's missing-API-key sentence with `reason: forbidden` and no
-    `status`, where the metadata read of the same file answers the unregistered caller."""
+    read with no `Authorization` answers real's missing-API-key sentence with `reason: forbidden`
+    and no `status`, where the metadata read of the same file answers the unregistered caller."""
     requests = _download_requests(client, admin_h)
     for kind in ("media", "export"):
         url, params = requests[kind]
@@ -3825,7 +3831,7 @@ def test_a_callback_on_a_download_is_real_503_to_the_byte(client, admin_h):
     `errors[]` entry inline and no trailing newline, where the serializer every other Google body
     goes through writes the array expanded and ends with one.
 
-    The same request with no credential answers it too: the callback is refused ahead of the
+    The same request with no `Authorization` answers it too: the callback is refused ahead of the
     missing-API-key 403, which is the order real answers them in."""
     requests = _download_requests(client, admin_h)
     for kind in ("media", "export"):

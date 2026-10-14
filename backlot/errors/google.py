@@ -18,8 +18,9 @@ envelope is NOT uniform — three families differ in which optional members they
 
 A request that carries no credential is refused by operation rather than by family: the 403 of an
 unregistered caller on the operations that also take an API key, the 401 of a missing credential on
-the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key
-(:func:`missing_api_key`). One whose credential does not resolve is the 401 of
+the rest (:func:`no_credentials`), and on a download the 403 that names the missing API key when no
+`Authorization` is sent (:func:`missing_api_key`), or :func:`download_credential_refused`'s 401 when
+one is sent that is no credential. One whose credential does not resolve is the 401 of
 :func:`bad_token` in every family, which is why a missing credential and a bad token are separate
 constructors here rather than one "unauthorized". What counts as a credential is
 ``routers.google._credential``'s to say.
@@ -558,8 +559,9 @@ def no_credentials(path: str, method: str) -> GoogleError:
     ones in `_UNREGISTERED_CALLER_OPERATIONS`, :func:`missing_credentials` on the rest, Gmail, Docs
     and Slides whole among them.
 
-    A byte-stream read with no credential is a third answer, :func:`missing_api_key`, which the
-    route asks for by name.
+    A byte-stream read with no credential has two answers of its own, :func:`missing_api_key` with
+    no `Authorization` and :func:`download_credential_refused` with one that is no credential, which
+    the route asks for by name.
     """
     if any(m == method and p.fullmatch(path) for m, p in _UNREGISTERED_CALLER_OPERATIONS):
         return unregistered_caller()
@@ -660,10 +662,10 @@ def download_credential_refused() -> GoogleError:
 
 
 def missing_api_key() -> GoogleError:
-    """No credential on a byte-stream read. Measured 2026-10-04 on `files.export` and 2026-10-05 on
-    `files.get?alt=media`, on an existing file and on a missing id alike: 403 with this sentence and
-    `reason: forbidden`, and NO ``status`` -- where the same route without the download answers
-    :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
+    """No `Authorization` on a byte-stream read. Measured 2026-10-04 on `files.export` and
+    2026-10-05 on `files.get?alt=media`, on an existing file and on a missing id alike: 403 with
+    this sentence and `reason: forbidden`, and NO ``status`` -- where the same route without the
+    download answers :func:`unregistered_caller`'s sentence with `PERMISSION_DENIED`.
 
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
@@ -1207,10 +1209,13 @@ def head_refusal() -> Response:
     2026-10-13 one Workspace spreadsheet's id got the 404 on 32 of 32, whoever asked; across 20
     other Sheets paths two gcloud-issued tokens (that member's and a consumer account's) got the 400
     on 160 of 160, while a bad token and no credential got the 404 on 28 of 160; that member's
-    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths; and
-    another Workspace member's token, with the `drive` and `gmail.readonly` scopes, got the 404 on
-    each Sheets path it was sent to. What picks the page was not found, so every caller gets the 400
-    here."""
+    token from the OAuth 2.0 Playground got the 400 on 35 of 35 across seven of those paths, and
+    that member's gcloud token got the 400 on 18 of 18 across six other spreadsheets the member can
+    open. Nor does Sheets go by whether the caller is a domain administrator: that member is not
+    one, like every caller modelled here, and another Workspace member who is not one either got the
+    404 on each made-up Sheets path it tried, with `drive`, `gmail.readonly` or both, but the 400 on
+    a spreadsheet that exists, while that domain's administrator got the 400 on both through the
+    same OAuth client. What picks the page was not found, so every caller gets the 400 here."""
     return Response(status_code=400, media_type="text/html")
 
 

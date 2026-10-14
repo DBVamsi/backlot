@@ -191,9 +191,12 @@ def _batch_sub_response(r, base: str) -> str:
     this order: `Content-Length: 0`, though its error body follows, `Content-Type` and `Location`.
     A part whose answer carries a `WWW-Authenticate`, a 401, passes it on ahead of `Content-Type`,
     where real's 401 parts put it on 2026-10-13, on Drive's batch and on Sheets', for a missing
-    credential and for a bad one. Any other header stays behind, so the `Location` of a redirect a
-    route builds from the host the parts are dispatched to, which nothing answers, is not passed
-    on."""
+    credential and for a bad one. Real's 200, 404 and 401 parts end their headers with a
+    `Content-Length` too, and its 200s and 404s carry `Cache-Control`, `Date` and `Expires` ahead of
+    `Content-Type`, in an order that changes from part to part, measured on Drive's batch on
+    2026-10-13; this server sends none of those four on them. Any other header stays behind, so the
+    `Location` of a redirect a route builds from the host the parts are dispatched to, which nothing
+    answers, is not passed on."""
     location = r.headers.get("location", "")
     redirect = r.status_code == 302 and location.startswith(f"{base}download/")
     lines = [f"HTTP/1.1 {r.status_code} {_batch_reason(r.status_code)}"]
@@ -279,13 +282,16 @@ def _credential(request: Request) -> tuple[bool, str | None]:
     where the header leaves it a say (`_query_credential`).
 
     The scheme is `Bearer` or `OAuth` in that case, and one space after it starts the token, which
-    runs to the next space, tab or comma once any of those in front of it are passed. A scheme with
-    something other than a space after it, and one whose space leads to nothing but those three,
-    is a credential that names no token; a scheme with nothing but spaces and tabs after it, a
-    scheme in another case and anything else are no credential at all. Measured on 2026-10-11
-    against Drive (`files.list` and `about`), Sheets, Docs, Slides and Gmail, with a token that
-    resolves and with `nope`, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists
-    replayed on Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
+    runs to the next space, tab or comma once any of those in front of it are passed. A token that
+    starts with `"` runs to the next `"` instead, or to the end without one, and loses the spaces,
+    tabs and commas at its two ends but none between; what follows the closing `"` is passed over,
+    and `""` names no token. A scheme with something other than a space after it, and one whose
+    space leads to nothing but those three, is a credential that names no token; a scheme with
+    nothing but spaces and tabs after it, a scheme in another case and anything else are no
+    credential at all. Measured on 2026-10-11 against Drive (`files.list` and `about`), Sheets,
+    Docs, Slides and Gmail, with a token that resolves and with `nope`, a quoted token only on
+    2026-10-13, and every spelling ``tests/test_google.py::_CREDENTIAL_ROWS`` lists replayed on
+    Gmail's `labels.get` and Drive's `files.list` on 2026-10-13.
 
     The query is read where there is no header, where the header is no credential but for a bare
     `Bearer` or `OAuth`, which keeps the query out too, and where it is a scheme with no space after
@@ -303,7 +309,11 @@ def _credential(request: Request) -> tuple[bool, str | None]:
                 return False, None
             if not rest.startswith(" "):
                 return _query_credential(request, gated=False) or (True, None)
-            return True, _TOKEN_END.split(rest.lstrip(" \t,"), maxsplit=1)[0] or None
+            token = rest.lstrip(" \t,")
+            if token.startswith('"'):
+                quoted = token[1:].split('"', 1)[0]
+                return True, quoted.strip(" \t,") if quoted else None
+            return True, _TOKEN_END.split(token, maxsplit=1)[0] or None
     return _query_credential(request, gated=True) or (False, None)
 
 
@@ -432,10 +442,10 @@ def refuse_an_unserved_operation(request: Request) -> None:
     (:func:`gerr.no_credentials`). A caller that passes all three gets the router's 404 or 405, as
     Backlot has no operation to run.
 
-    Measured 2026-10-11 on each of the 147 operations, with no `Authorization` and with
-    `Bearer nope`, and on eight of them beside an unknown `$.xgafv`, `$.xgafv=1`, a callable
-    `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused as a
-    served route of the same method does. The operation is chosen on :func:`_operation_path`."""
+    Measured 2026-10-11 on eight of the operations beside an unknown `$.xgafv`, `$.xgafv=1`, a
+    callable `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused
+    as a served route of the same method does. The operation is chosen on
+    :func:`_operation_path`."""
     path = _operation_path(request)
     if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
         return
@@ -2583,9 +2593,10 @@ async def drive_files_export(file_id: str, request: Request):
 
     A byte-stream read layers real's three download refusals before those, measured 2026-10-04,
     2026-10-05 and 2026-10-07: a `Bearer` that does not resolve is its 401, a `callback` is the 503
-    an uncallable name answers and the shape every later error takes, and a missing credential is
-    named only after `mimeType` (`gerr.missing_api_key`). An export asking for `alt=json` is none of
-    that -- it is an ordinary read, which `_drive_download` decides.
+    an uncallable name answers and the shape every later error takes, and no credential is refused
+    only after `mimeType` (`gerr.missing_api_key` with no `Authorization`,
+    `gerr.download_credential_refused` with one that is no credential). An export asking for
+    `alt=json` is none of that -- it is an ordinary read, which `_drive_download` decides.
 
     The export's `Content-Type` is the `mimeType` as sent and nothing more, measured 2026-09-30 on
     eleven formats of a spreadsheet and a document under five `Accept` values each (none, `*/*`,

@@ -99,7 +99,7 @@ Field names are snake_case, as Fireflies' own schema has them. Full introspectio
 | `user/repos` | The token's own reach. `visibility`, `sort`, `direction`; `type` and `affiliation` select on what the caller is to a repository, which a corpus does not state, and stay undeclared |
 | `rate_limit` | The windows the `x-ratelimit-*` headers report, `core`, `search` and `code_search`; a read of it does not count, and it answers with no credential at the anonymous limits, the one route here that does |
 | `repos/{o}/{r}` | |
-| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured |
+| `repos/{o}/{r}/issues[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is real's 422, and the repository is checked first, so an unknown repo is the 404 instead. `sort`, `direction`: real's enums and defaults, each order as measured. `labels`: comma-separated names, all required, matched without case; the last repeated parameter is read, and commas alone or whitespace alone filter nothing |
 | `repos/{o}/{r}/issues/{n}/comments` | |
 | `repos/{o}/{r}/issues/comments/{id}` | |
 | `repos/{o}/{r}/pulls[/{n}]` | `state` on the listing: `open`\|`closed`\|`all`; any other value is served as `open`, which is what real does here where the issue listing refuses it. `sort`, `direction` as on issues; `long-running` orders by creation and filters nothing, as it does on the wire |
@@ -198,10 +198,9 @@ own address: another address is the 403 `Delegation denied for <the caller's own
 `userId` without text on both sides of an `@` the 403
 `Invalid user id specified in request/Delegation denied`, as on real, which also answers the second
 to some shapes with text on both sides (`a@b`, `a@b@c`;
-`backlot.routers.google._refuse_another_mailbox` lists those measured). Both come after a
-`maxResults` that is not a uint32 and ahead of the message id, a `maxResults` of 0 and the
-`pageToken`; the admin token reads any mailbox. Measured against the live Gmail API on 2026-10-11
-and 2026-10-12.
+`backlot.routers.google._refuse_another_mailbox` lists those measured, and the refusals that come
+before both and after them). The admin token reads any mailbox. Measured against the live Gmail API
+on 2026-10-11 and 2026-10-12.
 
 ### Google Drive, Docs, Sheets, Slides — `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1`
 
@@ -366,22 +365,27 @@ writes it: every value it cannot convert and every name the request message lack
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
 **A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
-tab or a comma ends: `Bearer <t> x` and `Bearer <t>,x` are served, `Bearer<t>` is a bad token, and
-`bearer <t>`, `token <t>`, `Basic …` and a bare `Bearer` are no credential at all. With none, a
-request is answered by its operation rather than its family: an unregistered caller's 403 on an
-operation that takes API keys too (Drive's file and comment reads among them, and the three Sheets
-reads), a missing credential's 401 on the rest, and the missing API key's 403 on a download. Each of
-those 401s carries `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with
-`error="invalid_token"` for a token that does not resolve. An operation the two Google baselines
-acknowledge as `missing_operation` is refused the same way, after `$.xgafv` and `callback`, and a
-caller whose credential resolves gets the 404 or 405 its path gets. Measured against the live Drive,
-Gmail, Sheets, Docs and Slides APIs on 2026-10-11. A token in the query, `access_token`,
-`bearer_token` or `oauth_token`, is read where no header outranks it, and only when it starts
-`ya29.` or `1/` as Google's own do, but beside a scheme run into its token (`Bearer<t>`), whatever
-it holds. A Backlot token alone in the query is no credential, on the real APIs as here
-(`backlot.routers.google._query_credential`); a byte-stream read refuses any of those names, in any
-case, with real's 400 `OAuth token was passed in the query parameter…`. Measured against the live
-Drive and Gmail APIs on 2026-10-13.
+tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
+`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
+a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
+than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
+and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
+and on a download the missing API key's 403 with no `Authorization` header, the download server's
+401 with one that is no credential. Each of the front end's 401s carries
+`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
+token that does not resolve, and the download server's names the realm without its trailing slash.
+An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
+after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
+gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
+with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
+against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
+2026-10-14. A token in the query, `access_token`, `bearer_token` or `oauth_token`, is read where no
+header outranks it, and only when it starts `ya29.` or `1/` as Google's own do, but beside a scheme
+run into its token (`Bearer<t>`), whatever it holds. A Backlot token alone in the query is no
+credential, on the real APIs as here (`backlot.routers.google._query_credential`); a byte-stream
+read refuses any of those names, in any case, with real's 400
+`OAuth token was passed in the query parameter…`. Measured against the live Drive and Gmail APIs on
+2026-10-13.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
@@ -537,19 +541,31 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `ListMultipartUploads` | Always the empty page, since data enters through `backlot import` and no upload is ever in progress. `prefix`, `delimiter` and `key-marker` are echoed, `max-uploads` and `encoding-type` validated and echoed, as real does |
 | `ListObjects` | The bare bucket GET, and what any `list-type` other than `2` selects. `prefix`, `delimiter`, `marker`, `max-keys`, `encoding-type`; `Marker` echoed, `NextMarker` under a delimiter, an `Owner` on every object |
 | `ListObjectsV2` | Selected by `list-type=2`. `prefix`, `delimiter`, `start-after`, `continuation-token`, `max-keys`, `encoding-type`, `fetch-owner`; `KeyCount` and the continuation tokens, an `Owner` on every object only under `fetch-owner=true` |
-| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; and checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
+| `GetObject` | `Range`; `partNumber`, where part `1` is the whole object as the 206 of its range, a higher part real's 416 and a number outside 1 to 10000 or one beside a `Range` real's 400; `versionId=null`, the one version each key has, where any other `versionId` is real's 400; checksum mode, where an answer holding the whole object carries its CRC-64/NVME and another mode is real's 400; and `If-Match`, `If-Unmodified-Since`, `If-None-Match` and `If-Modified-Since`, read as real reads them and answered with its 304 or 412 ahead of the range and the part. A key in a bucket that does not exist, or that the caller cannot see, is `NoSuchBucket`, as on real |
 | `HeadObject` | |
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |
 | `ListParts` | Always `NoSuchUpload`, since no upload is ever in progress; `max-parts` and `part-number-marker` validated first, as real does |
+
+An object's GET and HEAD also read the six `response-*` query parameters, `response-content-type`,
+`response-content-language`, `response-expires`, `response-cache-control`,
+`response-content-disposition` and `response-content-encoding`: each sets the header it names on the
+200 and the 206, every one but `Content-Type` on a 304, and leaves the bytes as stored. Their names
+are case-sensitive, a repeated one is read from its first value, and a control character other than
+a tab comes back as a space. A value real cannot put in a header, a non-Latin-1 character or an
+unclosed quote, is its 400 `InvalidArgument`, at a bucket's path too, where an override sets
+nothing, and so is a name that starts with `response-` and is not one of the six; an override on an
+object's GET or HEAD sent unsigned is its 400 `InvalidRequest`, unless a sub-resource or a
+`versionId` other than `null` is beside it.
 
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A
 sub-resource whose operations are all on another method, `?delete` and a key's `?restore` and
 `?select` among them, is the 405 a GET or a HEAD naming it gets, and a key's `?uploads` on a GET is
 real's 400. A `?partNumber` at a bucket's path, which names a part of an object, is real's 400 on a
-GET, a HEAD, a `PUT`, a `POST`, a `DELETE` and a `PATCH`, and beside `?uploadId` it is UploadPart's
-405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the bucket is
-found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
+GET, a HEAD, a `PUT`, a `POST`, a `DELETE`, a `PATCH` and an `OPTIONS`. Beside `?uploadId` an
+`OPTIONS` reaches the CORS preflight, while a GET, a HEAD, a `POST`, a `DELETE` and a `PATCH` get
+UploadPart's 405. At a bucket's path `?torrent` is real's 405 and `?uploadId` real's 400 once the
+bucket is found. At a key's path `?accelerate`, `?cors`, `?inventory`, `?lifecycle`, `?location`,
 `?notification`, `?policy`, `?replication`, `?requestPayment`, `?versioning` and `?website` are the
 bucket's answer whatever the key, and `?logging` and `?versions` real's 400s; a bucket's other
 sub-resources are ignored there, as on real. A `versionId` at a bucket's path is real's 400 on a GET
