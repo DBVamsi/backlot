@@ -301,9 +301,9 @@ async def _canonical_path_repo(request: Request) -> None:
 
 
 #: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
-#: `{archive_format}` routes `zip` alone, and `POST …/releases/{}/assets` routes nothing. Each
-#: answered `Bearer nope` with the 404 for a path no route matches, where every other operation
-#: the baseline lists answered "Bad credentials" (see :func:`refuse_an_unserved_operation`).
+#: `{archive_format}` routes `zip` alone, and `POST …/releases/{}/assets` routes nothing. The
+#: spellings these leave out answered `Bearer nope` with the 404 for a path no route matches, where
+#: the rest answered "Bad credentials" (see :func:`refuse_an_unserved_operation`).
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
 }
@@ -324,18 +324,19 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
     spellings :data:`_NOT_ROUTED` and :data:`_ROUTED_AS` leave out, with each `{}` past the owner
     and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
-    of 42 answered "Requires authentication", and the version's 400 never came first:
-    `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`, `GET /user/packages` and
-    `GET /gists/starred` pinned to `1999-01-01` were each the 401. That is the other order from the
-    served `/user/repos`, whose version comes first (see :func:`_validate_api_version`). Ten of the
-    42 real answered without asking for a credential, 200, 404 or 422 (`GET /zen`,
+    of 42 answered "Requires authentication", and the four of them sent pinned to `1999-01-01` were
+    the 401 rather than the version's 400: `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`,
+    `GET /user/packages` and `GET /gists/starred`. That is the other order from the served
+    `/user/repos`, whose version comes first (see :func:`_validate_api_version`). Ten of the 42
+    real answered without asking for a credential, 200, 404 or 422 (`GET /zen`,
     `GET /users/{username}/repos` and `POST /markdown` among them), and the last is in
     :data:`_NOT_ROUTED`; here no credential is :func:`_require`'s 401 on those ten too, as it is
-    on every served route.
+    on every served route but `/rate_limit`.
 
-    That 401 carries no version echo, and only a `GET` or a `POST` carries the five `x-ratelimit-*`
-    and counts: `PATCH`, `PUT` and `DELETE` were refused with neither and moved no window, but for
-    `DELETE /installation/token`, which carried both. ``backlot.main`` asks
+    Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
+    `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
+    with neither and moved no window, `DELETE /installation/token` aside. Here none carries the
+    echo and the methods split as real's did; ``backlot.main`` asks
     :func:`refused_an_unserved_operation` to answer that way.
     """
     if not is_an_unserved_operation(request.method, request.url.path):
