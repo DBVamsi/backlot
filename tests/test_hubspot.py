@@ -777,6 +777,9 @@ _OPERATOR_ROWS = [
     _op("crlf", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent=2).replace("\n", "\r\n"), _enum_refusal(7, 23)),
     _op("lone-cr", '{\r"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}', _enum_refusal(2, 63), object_type="companies"),
     _op("byte-order-mark", '\ufeff{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}', _enum_refusal(1, 67), object_type="companies"),
+    # a UTF-16 body is read in its own encoding, and its byte-order mark takes no column
+    _op("utf-16", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}'.encode("utf-16-le"), _enum_refusal(1, 64), object_type="companies"),
+    _op("utf-16-byte-order-mark", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}'.encode("utf-16"), _enum_refusal(1, 64), object_type="companies"),
     _op("tab-indent", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent="\t"), _enum_refusal(7, 18)),
     _op("two-byte-chars-before", _value_first("ééé", ensure_ascii=False), _enum_refusal(1, 85)),
     _op("escaped-chars-before", _value_first("ééé", ensure_ascii=True), _enum_refusal(1, 97)),
@@ -827,7 +830,7 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(
     the body is served."""
     headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
     url = f"/hubspot/crm/v3/objects/{object_type}/search"
-    r = client.post(url, headers=headers, content=raw.encode())
+    r = client.post(url, headers=headers, content=raw if isinstance(raw, bytes) else raw.encode())
     if isinstance(want, dict):
         assert (r.status_code, r.json()) == (400, want)
     elif isinstance(want, tuple):
