@@ -143,10 +143,12 @@ def _slack_ts(value: str | None) -> str | None | bool:
     Real Slack's reading of ``oldest`` / ``latest``:
 
     #. Split on ``.``.
-    #. First part: keep only digits (drop everything else) — that is the *seconds*.
-    #. Second part: keep only digits — that is the *microseconds*, zero-padded to 6 digits.
+    #. First part: keep only digits, read as int — that is the *seconds*.
+    #. Second part: keep only digits, read as int — that is the *microseconds*.
     #. Third part (if any): ignored.
-    #. If the combined seconds.microseconds exceeds 2^63−1 microseconds, cap at that maximum.
+    #. Concatenate the seconds digits with the microseconds zero-padded to 6 digits, read the
+       combined string as an integer — that is the total microseconds.
+    #. Cap total microseconds at 2^63−1.
     #. If the original string contains no digit at all, the value is refused.
 
     Returns the formatted string ``"SSSSSSSSSS.MMMMMM"`` on success, ``False`` on refusal,
@@ -160,36 +162,28 @@ def _slack_ts(value: str | None) -> str | None | bool:
         return False
 
     parts = value.split(".")
-    # First part: seconds — keep only digits.
+    # First part: seconds — keep only digits, read as int.
     seconds_str = "".join(c for c in parts[0] if c.isdigit())
     if not seconds_str:
         seconds_str = "0"
     seconds = int(seconds_str)
 
-    # Second part: microseconds — keep only digits.
-    # If >6 digits, carry the overflow to seconds (real Slack behaviour).
+    # Second part: microseconds — keep only digits, read as int.
     if len(parts) > 1:
         micro_str = "".join(c for c in parts[1] if c.isdigit())
         if not micro_str:
             micro_str = "0"
-        # Carry excess digits to seconds.
-        if len(micro_str) > 6:
-            carry = int(micro_str[: len(micro_str) - 6])
-            seconds += carry
-            micro_str = micro_str[len(micro_str) - 6 :]
         microseconds = int(micro_str)
     else:
         microseconds = 0
 
-    # Cap total microseconds at 2^63 - 1.
-    total_us = seconds * 1_000_000 + microseconds
+    # Concatenate seconds with zero-padded microseconds, read as total microseconds.
+    total_us = int(f"{seconds}{microseconds:06d}")
     max_us = 2**63 - 1
     if total_us > max_us:
         total_us = max_us
-        seconds = total_us // 1_000_000
-        microseconds = total_us % 1_000_000
 
-    return f"{seconds:010d}.{microseconds:06d}"
+    return f"{total_us // 1_000_000:010d}.{total_us % 1_000_000:06d}"
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -729,9 +723,9 @@ async def conversations_history(request: Request):
         # real API sends both keys on every call rather than omitting them.
         "channel_actions_ts": None,
         "channel_actions_count": 0,
-        # Echo the timestamp parameters back — the live API includes these keys on every call.
-        "oldest": lo,
-        "latest": hi,
+        # Echo the timestamp parameters back — only when they were actually sent.
+        **({"oldest": lo} if lo is not None else {}),
+        **({"latest": hi} if hi is not None else {}),
     }
     # Omitted entirely on a last page, which is what the live API does here — NOT served with an
     # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
