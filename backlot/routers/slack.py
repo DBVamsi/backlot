@@ -137,20 +137,59 @@ def _slack_types(request: Request):
     return want if want <= _SLACK_TYPES else None
 
 
-def _slack_ts(value: str | None) -> float | None | bool:
-    """A Slack timestamp argument as a float; ``False`` marks one that does not parse and one
-    ``float()`` reads as infinite or NaN, which no window can be built from. Measured against the
-    live API on 2026-10-10, ``inf``, ``-inf``, ``nan``, ``Infinity``, ``-Infinity`` and ``NaN`` each
-    answer the same ``invalid_ts_oldest``/``invalid_ts_latest`` a string that does not parse does. A
-    spelling with digits that ``float()`` overflows is not one of them: real reads ``1e999`` as 1999
-    and answers a window, where any non-finite reading is refused here."""
+def _slack_ts(value: str | None) -> str | None | bool:
+    """Parse a timestamp parameter the way real Slack reads it.
+
+    Real Slack's reading of ``oldest`` / ``latest``:
+
+    #. Split on ``.``.
+    #. First part: keep only digits (drop everything else) — that is the *seconds*.
+    #. Second part: keep only digits — that is the *microseconds*, zero-padded to 6 digits.
+    #. Third part (if any): ignored.
+    #. If the combined seconds.microseconds exceeds 2^63−1 microseconds, cap at that maximum.
+    #. If the original string contains no digit at all, the value is refused.
+
+    Returns the formatted string ``"SSSSSSSSSS.MMMMMM"`` on success, ``False`` on refusal,
+    or ``None`` when the value is absent.
+    """
     if value is None or value == "":
         return None
-    try:
-        ts = float(value)
-    except ValueError:
+
+    # Check for digits first — no digit means refused (False).
+    if not any(c.isdigit() for c in value):
         return False
-    return ts if math.isfinite(ts) else False
+
+    parts = value.split(".")
+    # First part: seconds — keep only digits.
+    seconds_str = "".join(c for c in parts[0] if c.isdigit())
+    if not seconds_str:
+        seconds_str = "0"
+    seconds = int(seconds_str)
+
+    # Second part: microseconds — keep only digits.
+    # If >6 digits, carry the overflow to seconds (real Slack behaviour).
+    if len(parts) > 1:
+        micro_str = "".join(c for c in parts[1] if c.isdigit())
+        if not micro_str:
+            micro_str = "0"
+        # Carry excess digits to seconds.
+        if len(micro_str) > 6:
+            carry = int(micro_str[: len(micro_str) - 6])
+            seconds += carry
+            micro_str = micro_str[len(micro_str) - 6 :]
+        microseconds = int(micro_str)
+    else:
+        microseconds = 0
+
+    # Cap total microseconds at 2^63 - 1.
+    total_us = seconds * 1_000_000 + microseconds
+    max_us = 2**63 - 1
+    if total_us > max_us:
+        total_us = max_us
+        seconds = total_us // 1_000_000
+        microseconds = total_us % 1_000_000
+
+    return f"{seconds:010d}.{microseconds:06d}"
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -630,23 +669,32 @@ async def conversations_history(request: Request):
     if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
         inclusive = _param(request, "inclusive") in ("1", "true", "True")
 
+        def _ts_to_us(ts_str: str) -> int:
+            """Convert a Slack ts string "SSSSSSSSSS.MMMMMM" to total microseconds."""
+            s, m = ts_str.split(".")
+            return int(s) * 1_000_000 + int(m)
+
         def _in_window(r) -> bool:
-            ts = float(r["ts"])
+            ts_us = _ts_to_us(r["ts"])
             # Slack: latest is inclusive; oldest is exclusive unless inclusive=true
-            if lo is not None and (ts < lo if inclusive else ts <= lo):
-                return False
-            if hi is not None and ts > hi:
-                return False
+            if lo is not None:
+                lo_us = _ts_to_us(lo)
+                if ts_us < lo_us if inclusive else ts_us <= lo_us:
+                    return False
+            if hi is not None:
+                hi_us = _ts_to_us(hi)
+                if ts_us > hi_us:
+                    return False
             return True
 
         # SQL-narrow by created_ts (±1s to cover the sub-second fraction in a public ts), then apply
-        # the exact float window in Python — so a day window scans the day, not the whole channel.
-        ts_lo = int(lo) - 1 if lo is not None else None
-        ts_hi = int(hi) + 1 if hi is not None else None
+        # the exact window in Python — so a day window scans the day, not the whole channel.
+        lo_sec = int(lo.split(".")[0]) - 1 if lo is not None else None
+        hi_sec = int(hi.split(".")[0]) + 1 if hi is not None else None
         matched = [
             r
             for r in store.list_slack_top_level(
-                conn, name, ids, limit=10**9, ts_lo=ts_lo, ts_hi=ts_hi
+                conn, name, ids, limit=10**9, ts_lo=lo_sec, ts_hi=hi_sec
             )
             if _in_window(r)
         ]
@@ -681,6 +729,9 @@ async def conversations_history(request: Request):
         # real API sends both keys on every call rather than omitting them.
         "channel_actions_ts": None,
         "channel_actions_count": 0,
+        # Echo the timestamp parameters back — the live API includes these keys on every call.
+        "oldest": lo,
+        "latest": hi,
     }
     # Omitted entirely on a last page, which is what the live API does here — NOT served with an
     # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`

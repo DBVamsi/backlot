@@ -593,6 +593,152 @@ def test_slack_history_names_the_first_error_real_would(client, admin_h, params,
     assert r.json() == {"ok": False, "error": error}
 
 
+class TestSlackTsParsing:
+    """Divergence block 1 — large values. Real Slack caps at 2^63−1 microseconds;
+    float() overflows to inf and refuses the value."""
+
+    def test_large_value_capped_at_max(self):
+        from backlot.routers.slack import _slack_ts
+
+        # 2^63-1 microseconds = 9223372036 seconds + 854775 microseconds
+        max_us = 2**63 - 1
+        max_sec = max_us // 1_000_000
+        max_micro = max_us % 1_000_000
+        result = _slack_ts("9999999999999.999999")
+        assert result == f"{max_sec:010d}.{max_micro:06d}"
+
+    def test_value_at_exact_max(self):
+        from backlot.routers.slack import _slack_ts
+
+        max_us = 2**63 - 1
+        max_sec = max_us // 1_000_000
+        max_micro = max_us % 1_000_000
+        result = _slack_ts(f"{max_sec}.{max_micro:06d}")
+        assert result == f"{max_sec:010d}.{max_micro:06d}"
+
+
+class TestSlackTsNonStandardFormats:
+    """Divergence block 2 — non-standard formats. Real Slack keeps only digits in each part;
+    float() refuses anything that is not a pure numeric literal."""
+
+    def test_letters_and_digits(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "abc123" → digits "123" → "0000000123.000000"
+        assert _slack_ts("abc123") == "0000000123.000000"
+        # "1abc" → digits "1" → "0000000001.000000"
+        assert _slack_ts("1abc") == "0000000001.000000"
+
+    def test_comma_separator(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1,5" → no dot, all digits "15" → "0000000015.000000"
+        assert _slack_ts("1,5") == "0000000015.000000"
+
+    def test_hex_like(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "0x10" → digits "010" → "0000000010.000000"
+        assert _slack_ts("0x10") == "0000000010.000000"
+
+    def test_scientific_notation(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1e9" → digits "19" → "0000000019.000000"
+        assert _slack_ts("1e9") == "0000000019.000000"
+
+    def test_no_digits_refused(self):
+        from backlot.routers.slack import _slack_ts
+
+        # No digits at all → False
+        assert _slack_ts("abc") is False
+        assert _slack_ts("+-.") is False
+
+    def test_mixed_with_dot(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1.abc234" → first "1", second "234" → "0000000001.000234"
+        assert _slack_ts("1.abc234") == "0000000001.000234"
+
+
+class TestSlackTsFractionalSeconds:
+    """Divergence block 3 — fractional seconds with >6 digits. Real Slack carries the overflow
+    into seconds; float() stores the full precision but the response does not echo it back."""
+
+    def test_7_fractional_digits_carry_to_seconds(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1700000000.1234567" → seconds=1700000000+1=1700000001, micro=234567
+        assert _slack_ts("1700000000.1234567") == "1700000001.234567"
+
+    def test_8_fractional_digits(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1.12345678" → seconds=1+12=13, micro=345678
+        assert _slack_ts("1.12345678") == "0000000013.345678"
+
+    def test_6_fractional_digits_unchanged(self):
+        from backlot.routers.slack import _slack_ts
+
+        # Exactly 6 digits → no carry
+        assert _slack_ts("1700000000.123456") == "1700000000.123456"
+
+    def test_1_fractional_digit(self):
+        from backlot.routers.slack import _slack_ts
+
+        # "1.0000001" → seconds=1+0=1, micro=000001
+        assert _slack_ts("1.0000001") == "0000000001.000001"
+
+    def test_extra_digits_ignored_after_third_part(self):
+        from backlot.routers.slack import _slack_ts
+
+        # Third part is ignored
+        assert _slack_ts("1.234567.890") == "0000000001.234567"
+
+
+class TestSlackHistoryEchoesTimestamps:
+    """Divergence block 4 — response echoing. Real Slack echoes the parsed `oldest` and `latest`
+    values back in the response body."""
+
+    def test_history_echoes_parsed_timestamps(self, client, admin_h):
+        cid = _a_channel_id(client, admin_h)
+        r = client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "oldest": "1700000000.1234567", "latest": "1700000000.9999999"},
+        )
+        body = r.json()
+        assert body["ok"] is True
+        # The parsed values are echoed back
+        assert body["oldest"] == "1700000001.234567"
+        # 9999999 → carry 9 to seconds: 1700000000+9 = 1700000009, micro=999999
+        assert body["latest"] == "1700000009.999999"
+
+    def test_history_echoes_none_when_absent(self, client, admin_h):
+        cid = _a_channel_id(client, admin_h)
+        r = client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid},
+        )
+        body = r.json()
+        assert body["ok"] is True
+        assert body["oldest"] is None
+        assert body["latest"] is None
+
+    def test_history_echoes_non_standard_format(self, client, admin_h):
+        cid = _a_channel_id(client, admin_h)
+        r = client.get(
+            "/slack/api/conversations.history",
+            headers=admin_h,
+            params={"channel": cid, "oldest": "abc123"},
+        )
+        body = r.json()
+        assert body["ok"] is True
+        assert body["oldest"] == "0000000123.000000"
+        assert body["latest"] is None
+
+
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
     """Every public channel reported the same membership — the entire roster — because the handler
     skipped membership for a public channel. Real Slack's membership differs per channel, and a
