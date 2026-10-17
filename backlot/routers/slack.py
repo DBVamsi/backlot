@@ -46,6 +46,10 @@ class SlackConversationInfo(_SlackOk):
 
 
 class SlackHistory(_SlackOk):
+    # Real sends `latest` and then `oldest` right after `ok`, each only when it read one
+    # (slack.com/api, 2026-10-11 and 2026-10-16); the route leaves out the one not set.
+    latest: str | None = None
+    oldest: str | None = None
     messages: list[dict] = []
     has_more: bool = False
 
@@ -137,53 +141,34 @@ def _slack_types(request: Request):
     return want if want <= _SLACK_TYPES else None
 
 
+# The largest timestamp real reads, 2^63-1 microseconds (`9223372036854.775807`).
+_SLACK_TS_MAX = 2**63 - 1
+
+
 def _slack_ts(value: str | None) -> str | None | bool:
-    """Parse a timestamp parameter the way real Slack reads it.
+    """A Slack timestamp argument as real reads it, in the form real echoes it back
+    (`SSSSSSSSSS.MMMMMM`): ``None`` when it is absent, empty or exactly `0`, and ``False`` for one
+    real answers with ``invalid_ts_oldest``/``invalid_ts_latest``.
 
-    Real Slack's reading of ``oldest`` / ``latest``:
-
-    #. Split on ``.``.
-    #. First part: keep only digits, read as int — that is the *seconds*.
-    #. Second part: keep only digits, read as int — that is the *microseconds*.
-    #. Third part (if any): ignored.
-    #. Concatenate the seconds digits with the microseconds zero-padded to 6 digits, read the
-       combined string as an integer — that is the total microseconds.
-    #. Cap total microseconds at 2^63−1.
-    #. If the original string contains no digit at all, the value is refused.
-
-    Returns the formatted string ``"SSSSSSSSSS.MMMMMM"`` on success, ``False`` on refusal,
-    or ``None`` when the value is absent.
+    Measured against slack.com/api on 2026-10-11 and 2026-10-16; Slack does not document it, and
+    this is a fit to what was measured. The ASCII digits before the first `.`, anything else there
+    dropped, are seconds (`1e9` is 19, `abc123` is 123, `1²` is 1); the ASCII digits of the next
+    part are a whole number of microseconds written after the seconds, so `.5` is 5 µs and a seventh
+    digit moves into the seconds; a third part is ignored; and the result is capped at
+    :data:`_SLACK_TS_MAX` however many digits it has. A value that reads as zero is refused, one
+    with no ASCII digit included (`abc`, `inf`, `١٢٣`, `５`, `00`, `0.0`, `-0`), but `0` itself is
+    no bound.
     """
-    if value is None or value == "":
+    if value is None or value in ("", "0"):
         return None
-
-    # Check for digits first — no digit means refused (False).
-    if not any(c.isdigit() for c in value):
+    head, _, tail = value.partition(".")
+    seconds = "".join(c for c in head if c in "0123456789")
+    micros = "".join(c for c in tail.partition(".")[0] if c in "0123456789")
+    digits = (seconds + micros.lstrip("0").zfill(6)).lstrip("0")
+    total = min(int(digits[:20] or "0"), _SLACK_TS_MAX)
+    if not total:
         return False
-
-    parts = value.split(".")
-    # First part: seconds — keep only digits, read as int.
-    seconds_str = "".join(c for c in parts[0] if c.isdigit())
-    if not seconds_str:
-        seconds_str = "0"
-    seconds = int(seconds_str)
-
-    # Second part: microseconds — keep only digits, read as int.
-    if len(parts) > 1:
-        micro_str = "".join(c for c in parts[1] if c.isdigit())
-        if not micro_str:
-            micro_str = "0"
-        microseconds = int(micro_str)
-    else:
-        microseconds = 0
-
-    # Concatenate seconds with zero-padded microseconds, read as total microseconds.
-    total_us = int(f"{seconds}{microseconds:06d}")
-    max_us = 2**63 - 1
-    if total_us > max_us:
-        total_us = max_us
-
-    return f"{total_us // 1_000_000:010d}.{total_us % 1_000_000:06d}"
+    return f"{total // 1_000_000:010d}.{total % 1_000_000:06d}"
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -616,6 +601,7 @@ async def conversations_info(request: Request):
     "/conversations.history",
     methods=["GET", "POST"],
     response_model=SlackHistory,
+    response_model_exclude_unset=True,
     openapi_extra={"parameters": _P_HISTORY},
 )
 async def conversations_history(request: Request):
@@ -723,9 +709,8 @@ async def conversations_history(request: Request):
         # real API sends both keys on every call rather than omitting them.
         "channel_actions_ts": None,
         "channel_actions_count": 0,
-        # Echo the timestamp parameters back — only when they were actually sent.
-        **({"oldest": lo} if lo is not None else {}),
         **({"latest": hi} if hi is not None else {}),
+        **({"oldest": lo} if lo is not None else {}),
     }
     # Omitted entirely on a last page, which is what the live API does here — NOT served with an
     # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
